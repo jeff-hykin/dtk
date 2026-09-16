@@ -326,5 +326,12 @@ export default new Command()
                 }))
             }),
     )
+    .command("add", passthrough({
+        name: "add",
+        description: "Replay the recording through dimos modules and write their outputs back in",
+        tool: "data_add",
+        accepts: ["db"],
+        argumentsLine: "<recording.db> '<json>' [options]",
+    }))
     .command("topic", topic)
     .command("tf", tf)

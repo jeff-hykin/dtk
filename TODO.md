@@ -123,3 +123,8 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
 - [ ] `heatmap` dies on a recording whose `PointCloud2` fingerprint predates `@dimos/msgs@0.1.4`
       (e.g. `spot_small_loop.db`). Same failure from `~/Commands/heatmap`, so it is the tool.
 - [ ] Linux `icp_stitch` needs glibc 2.34, so an Ubuntu 20.04 / L4T 35 target is out.
+
+## Later
+
+- [ ] Bring `urdf_edit` up to date with the upgrades in
+      https://github.com/jeff-hykin/dim-urdf-editor — dtk's copy is the older `~/Commands/urdf-view`.

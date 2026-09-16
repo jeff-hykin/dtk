@@ -168,6 +168,14 @@ export const tools = [
         withPackages: ["mcap", "rosbags"],
     },
     {
+        name: "data_add",
+        kind: "python",
+        description: "Replay a recording through dimos modules and write their outputs back into it",
+        entry: "tools/data_add.py",
+        formats: ["db"],
+        needsDimosModule: "dimos/memory2/store/sqlite.py",
+    },
+    {
         name: "graph",
         kind: "python",
         description: "Render the DimOS Blueprints in a python file as a diagram in the browser",
