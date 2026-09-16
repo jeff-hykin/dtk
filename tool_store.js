@@ -123,9 +123,13 @@ async function ensureBinary(tool, { force }) {
     Deno.mkdirSync(`${cacheDir}/bin`, { recursive: true })
     const temporaryPath = `${destination}.partial`
     console.error(`dtk: downloading ${tool.name} for ${target}`)
+    const offered = await assetIdentity(tool, assetName)
     await downloadAsset(tool, assetName, temporaryPath)
     Deno.chmodSync(temporaryPath, 0o755)
     Deno.renameSync(temporaryPath, destination)
+    if (offered !== null) {
+        Deno.writeTextFileSync(identityPathOf(tool), `${offered}\n`)
+    }
     await ensureRuntime(tool, target, { force })
     return destination
 }
@@ -218,9 +222,30 @@ function loaderAndLibraries(folder) {
 }
 
 // The plain fetch first, then `gh`, which already has credentials for a private repo.
+export function assetUrl(tool, assetName) {
+    return `https://github.com/${tool.repo}/releases/latest/download/${assetName}`
+}
+
+// What the release is offering right now, without fetching it. Used to answer
+// "is the copy here still the current one" for a great deal less than a download.
+export async function assetIdentity(tool, assetName) {
+    try {
+        const response = await fetch(assetUrl(tool, assetName), { method: "HEAD" })
+        if (!response.ok) {
+            return null
+        }
+        const tag = response.headers.get("etag") ?? ""
+        const size = response.headers.get("content-length") ?? ""
+        return `${tag}|${size}`
+    } catch (error) {
+        return null
+    }
+}
+
+const identityPathOf = (tool) => `${binaryPathOf(tool)}.identity`
+
 async function downloadAsset(tool, assetName, destination) {
-    const url = `https://github.com/${tool.repo}/releases/latest/download/${assetName}`
-    const response = await fetch(url)
+    const response = await fetch(assetUrl(tool, assetName))
     if (response.ok) {
         const file = await Deno.open(destination, { write: true, create: true, truncate: true })
         await response.body.pipeTo(file.writable)
@@ -228,6 +253,31 @@ async function downloadAsset(tool, assetName, destination) {
     }
     response.body?.cancel()
     await downloadWithGh(tool, assetName, destination, response.status)
+}
+
+// True when the copy in the cache is the one the release is serving. Unknown
+// (a HEAD that failed, nothing recorded) counts as stale, so the fallback is to
+// download rather than to skip.
+export async function isCurrent(tool) {
+    if (tool.kind !== "binary") {
+        return isDownloaded(tool)
+    }
+    if (!isDownloaded(tool)) {
+        return false
+    }
+    const assetName = tool.assets[Deno.build.target]
+    if (assetName === undefined) {
+        return false
+    }
+    const offered = await assetIdentity(tool, assetName)
+    if (offered === null) {
+        return false
+    }
+    try {
+        return Deno.readTextFileSync(identityPathOf(tool)).trim() === offered
+    } catch (error) {
+        return false
+    }
 }
 
 async function downloadWithGh(tool, assetName, temporaryPath, status) {

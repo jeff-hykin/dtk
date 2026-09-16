@@ -3,6 +3,7 @@
 
 import data from "./data.js"
 import doctor from "./doctor.js"
+import fk from "./fk.js"
 import genBlue from "./gen_blue.js"
 import python from "./python.js"
 import list from "./list.js"
@@ -14,6 +15,7 @@ export const commands = [
     data,
     python,
     genBlue,
+    fk,
     list,
     update,
     remove,
