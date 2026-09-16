@@ -1,5 +1,6 @@
 import { Command } from "jsr:@cliffy/command@1.0.0-rc.7"
 import { version } from "../version.js"
+import { cacheDir, runningFromSource, sourceBase } from "../tool_store.js"
 
 export default new Command()
     .name("doctor")
@@ -8,5 +9,6 @@ export default new Command()
         console.log(`dtk        ${version}`)
         console.log(`deno       ${Deno.version.deno}`)
         console.log(`platform   ${Deno.build.target}`)
-        console.log(`cwd        ${Deno.cwd()}`)
+        console.log(`source     ${runningFromSource ? `${sourceBase} (checkout)` : sourceBase}`)
+        console.log(`cache      ${cacheDir}`)
     })

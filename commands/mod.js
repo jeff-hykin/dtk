@@ -1,8 +1,16 @@
-// Every subcommand of dtk is listed here. To add one, drop a file in this
-// folder that default-exports a cliffy Command, then import it below.
+// The built-in commands of dtk itself. Sub-tools are listed in ../registry.js
+// instead, and are dispatched before cliffy ever sees the arguments.
 
 import doctor from "./doctor.js"
+import list from "./list.js"
+import remove from "./remove.js"
+import update from "./update.js"
+import where from "./where.js"
 
 export const commands = [
+    list,
+    update,
+    remove,
+    where,
     doctor,
 ]
