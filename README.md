@@ -13,13 +13,11 @@ curl -fsSL https://raw.githubusercontent.com/jeff-hykin/dtk/master/install.sh | 
 
 That installs [deno](https://deno.land) if you don't already have it, then installs `dtk`.
 
-Already have deno? This is the whole install:
+Re-run it to update dtk. Uninstall with `deno uninstall -g dtk`.
 
-```sh
-deno install -gfA --reload -n dtk https://raw.githubusercontent.com/jeff-hykin/dtk/master/main.js
-```
-
-Re-run either line to update dtk itself. Uninstall with `deno uninstall -g dtk`.
+It installs from the current commit sha rather than from `master`, because github's cdn serves
+a branch url from a short-lived cache: install straight off `master` and you can get a mix of
+old and new files, which deno then caches forever. The sha pins one consistent snapshot.
 
 ## Usage
 
@@ -61,9 +59,8 @@ dtk doctor              # platform, cache location, where dtk itself came from
 
 The cache is `$XDG_CACHE_HOME/dtk`, or `~/.cache/dtk`. Override it with `DTK_CACHE`.
 
-A downloaded tool is kept until something says otherwise, so **bump `version` in `version.js`
-when you change anything under `tools/`** — that is what tells an existing install its copy is
-stale. `dtk update` forces a re-download either way.
+A downloaded tool belongs to the dtk snapshot that fetched it, so re-running the install line
+picks up tool changes along with everything else. `dtk update` re-downloads without reinstalling.
 
 ## Adding a tool
 
