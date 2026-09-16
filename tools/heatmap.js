@@ -138,6 +138,24 @@ const LCM_DECODERS = {
 
 function sqliteSource(path) {
     const db = new Database(path, { readonly: true })
+    // A stream says how its blobs are encoded, and a cloud stream is very often
+    // "lz4+lcm" rather than plain "lcm". Decoding the compressed bytes as LCM
+    // fails as a fingerprint mismatch, which reads like a message-version problem
+    // and is not one.
+    const codecs = new Map()
+    for (const [name, config] of db.prepare("SELECT name, config FROM _streams").values()) {
+        codecs.set(name, JSON.parse(config).codec_id ?? "lcm")
+    }
+    const uncompress = (stream, bytes) => {
+        const codec = codecs.get(stream) ?? "lcm"
+        if (codec.startsWith("lz4")) {
+            return new Uint8Array(lz4.decompress(bytes))
+        }
+        if (codec !== "lcm") {
+            throw new Error(`stream "${stream}" is stored as ${codec}, which heatmap cannot read`)
+        }
+        return bytes
+    }
     return {
         kinds() {
             const kinds = new Map()
@@ -155,7 +173,8 @@ function sqliteSource(path) {
             ).values()
             const out = []
             for (let index = 0; index < rows.length; index += stride) {
-                out.push({ ts: rows[index][0], message: LCM_DECODERS[kind](new Uint8Array(rows[index][1])) })
+                const bytes = uncompress(stream, new Uint8Array(rows[index][1]))
+                out.push({ ts: rows[index][0], message: LCM_DECODERS[kind](bytes) })
             }
             return out
         },

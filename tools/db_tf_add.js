@@ -201,6 +201,24 @@ const stampFor = (seconds) => ({
 
 // ---------------------------------------------------------------- the file
 
+// These re-encode a message and write it back, so a stream whose blobs are
+// compressed would end up holding plaintext under a header that says otherwise.
+// Refusing is the only safe answer until they learn to re-compress.
+const refuseCompressed = (rows) => {
+    for (const row of rows) {
+        let codec = "lcm"
+        try {
+            codec = JSON.parse(row.config)?.codec_id ?? "lcm"
+        } catch (error) {
+            codec = "lcm"
+        }
+        if (codec !== "lcm") {
+            console.error(`error: stream "${row.name}" is stored as ${codec}; db_tf_add only handles plain lcm`)
+            Deno.exit(1)
+        }
+    }
+}
+
 const db = new Database(dbPath)
 
 const streamNames = db.prepare("SELECT name, config FROM _streams").all()
@@ -213,7 +231,9 @@ const isTfStream = (row) => {
     }
     return payload.split(/[./]/).pop() === "TFMessage" || /(^|_)tf(_static)?$/.test(row.name)
 }
-const tfStreams = streamNames.filter(isTfStream).map((row) => row.name)
+const tfStreamRows = streamNames.filter(isTfStream)
+refuseCompressed(tfStreamRows)
+const tfStreams = tfStreamRows.map((row) => row.name)
 const dynamicStream = tfStreams.includes("tf") ? "tf" : tfStreams.find((each) => !each.endsWith("_static")) ?? null
 const staticStream = tfStreams.includes("tf_static") ? "tf_static" : null
 

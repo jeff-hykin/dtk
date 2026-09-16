@@ -244,6 +244,16 @@ if (isMcap) {
 } else {
     const db = new Database(path, { readonly: true })
     const streamRows = db.prepare("SELECT name, config FROM _streams").all()
+    // A stream declares how its blobs are stored; "lz4+lcm" is common for the
+    // bulky ones and decoding those bytes as LCM fails as a fingerprint mismatch,
+    // which reads like a message-version problem and is not one.
+    const codecOf = (row) => {
+        try {
+            return JSON.parse(row.config)?.codec_id ?? "lcm"
+        } catch (error) {
+            return "lcm"
+        }
+    }
     for (const row of streamRows) {
         const range = db.prepare(`SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM "${row.name}"`).get()
         if (range?.lo != null) {
@@ -267,12 +277,14 @@ if (isMcap) {
         if (row.name.endsWith("_static")) {
             staticStreams.add(row.name)
         }
+        const compressed = codecOf(row).startsWith("lz4")
         const messages = db.prepare(
             `SELECT s.ts AS ts, b.data AS data FROM "${row.name}" AS s
              JOIN "${row.name}_blob" AS b ON b.id = s.id ORDER BY s.ts`,
         ).all()
         for (const message of messages) {
-            for (const { parent, child, pose } of decodeLcmFrames(message.data)) {
+            const bytes = compressed ? new Uint8Array(lz4.decompress(message.data)) : message.data
+            for (const { parent, child, pose } of decodeLcmFrames(bytes)) {
                 note(parent, child, row.name, message.ts, pose)
             }
         }

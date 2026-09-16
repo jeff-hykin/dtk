@@ -126,8 +126,12 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
 - [x] `dimos_graph` imported `dimos.core.blueprints`, which moved to
       `dimos.core.coordination.blueprints` — it could not have run. Fixed in dtk's copy (`dtk
       graph`); `~/Commands/dimos_graph.py` still has the stale import.
-- [ ] `heatmap` dies on a recording whose `PointCloud2` fingerprint predates `@dimos/msgs@0.1.4`
-      (e.g. `spot_small_loop.db`). Same failure from `~/Commands/heatmap`, so it is the tool.
+- [x] `heatmap` died on `spot_small_loop.db` with an LCM fingerprint mismatch. Root cause was not
+      a message version at all: that recording's cloud stream is stored as `lz4+lcm` and heatmap
+      was decoding the compressed bytes. It now reads each stream's `codec_id`. The same recording
+      renders a full building floorplan.
+    - `tf_check` learned the same thing; `db_tf_rename` and `db_tf_add` REFUSE a compressed tf
+      stream rather than writing plaintext into one, since they re-encode.
 - [ ] Linux `icp_stitch` needs glibc 2.34, so an Ubuntu 20.04 / L4T 35 target is out.
 
 ## Later

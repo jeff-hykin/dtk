@@ -156,6 +156,24 @@ const rewrite = (data) => {
     return out
 }
 
+// These re-encode a message and write it back, so a stream whose blobs are
+// compressed would end up holding plaintext under a header that says otherwise.
+// Refusing is the only safe answer until they learn to re-compress.
+const refuseCompressed = (rows) => {
+    for (const row of rows) {
+        let codec = "lcm"
+        try {
+            codec = JSON.parse(row.config)?.codec_id ?? "lcm"
+        } catch (error) {
+            codec = "lcm"
+        }
+        if (codec !== "lcm") {
+            console.error(`error: stream "${row.name}" is stored as ${codec}; db_tf_rename only handles plain lcm`)
+            Deno.exit(1)
+        }
+    }
+}
+
 const db = new Database(dbPath)
 
 const streamRows = db.prepare("SELECT name, config FROM _streams").all()
@@ -167,15 +185,17 @@ const tfStreams = streamRows.filter((row) => {
         payload = ""
     }
     return payload.split(/[./]/).pop() === "TFMessage" || /(^|_)tf(_static)?$/.test(row.name)
-}).map((row) => row.name)
+})
+refuseCompressed(tfStreams)
+const tfStreamNames = tfStreams.map((row) => row.name)
 
-if (tfStreams.length === 0) {
+if (tfStreamNames.length === 0) {
     console.error(`error: no TFMessage stream in ${dbPath}`)
     db.close()
     Deno.exit(1)
 }
 
-console.log(`${dbPath}: tf streams ${tfStreams.join(", ")}`)
+console.log(`${dbPath}: tf streams ${tfStreamNames.join(", ")}`)
 for (const [from, to] of renames) {
     console.log(`  rename tf frame ${from} -> ${to}`)
 }
@@ -186,7 +206,7 @@ if (prefix !== null) {
 
 const updates = []
 const seenFrames = new Set()
-for (const stream of tfStreams) {
+for (const stream of tfStreamNames) {
     const rows = db.prepare(
         `SELECT s.id AS id, b.data AS data FROM "${stream}" AS s
          JOIN "${stream}_blob" AS b ON b.id = s.id`,
