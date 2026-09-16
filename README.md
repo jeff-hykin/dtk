@@ -78,6 +78,21 @@ dtk data tf rename <recording> <old> <new>
 dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]
 ```
 
+### Running a blueprint
+
+```sh
+dtk run <blueprint> [config tokens]     # dimos run, filtered and watched
+dtk run --check-only <blueprint>        # just the blueprint check
+dtk constellation                       # watch live LCM/zenoh traffic in the browser
+dtk log                                 # print the jsonl log's path, and open it
+dtk fk                                  # kill everything a run leaves behind
+```
+
+`dtk run` checks the blueprint before it starts anything — two modules writing the same topic, and
+a dangling output that looks like a typo of a dangling input — then turns dtop and a native rebuild
+on, prints the absolute path of the run's jsonl log, and shows only warnings and worse, de-duplicated
+so one module in a loop cannot bury the rest.
+
 ### Python
 
 Every python tool runs through one resolver, and `dtk python` exposes it:
