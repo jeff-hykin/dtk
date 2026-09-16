@@ -179,6 +179,13 @@ export const tools = [
         needsDimosModule: "dimos/memory2/store/sqlite.py",
     },
     {
+        name: "log_path",
+        kind: "python",
+        description: "Print where dimos is writing its jsonl log",
+        entry: "tools/log_path.py",
+        needsDimosModule: "dimos/constants.py",
+    },
+    {
         name: "graph",
         kind: "python",
         description: "Render the DimOS Blueprints in a python file as a diagram in the browser",

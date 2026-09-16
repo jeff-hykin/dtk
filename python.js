@@ -118,6 +118,7 @@ export async function runPython({
     withPackages = [],
     module = null,
     verbose = false,
+    capture = false,
 }) {
     if (!uvIsInstalled()) {
         throw new DtkError(
@@ -145,10 +146,18 @@ export async function runPython({
     }
     const command = new Deno.Command("uv", {
         args: uvArguments,
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
+        stdin: capture ? "null" : "inherit",
+        stdout: capture ? "piped" : "inherit",
+        stderr: capture ? "piped" : "inherit",
     })
-    const { code } = await command.output()
-    return code
+    const result = await command.output()
+    if (!capture) {
+        return result.code
+    }
+    const decoder = new TextDecoder()
+    return {
+        code: result.code,
+        stdout: decoder.decode(result.stdout),
+        stderr: decoder.decode(result.stderr),
+    }
 }

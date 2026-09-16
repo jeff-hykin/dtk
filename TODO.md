@@ -4,16 +4,20 @@ Add to this freely. Checked = done and verified.
 
 ## Next up
 
-- [ ] `dtk fk` — a process killer modelled on `~/Commands/kd`, rewritten in deno and cleaned up.
-      `kd` is 81 lines of `ps | grep -E` over six pattern groups (dimos, native modules, Unity,
-      gazebo, ROS, orphaned tcpdumps). **Aggressively drop everything dimos-specific** — this one
-      is about killing processes, not about dimos.
-- [ ] `dtk log` — print the absolute path of the jsonl log and, by default, open it. Uses the
-      python side to find it, through the shared `dtk python` project resolution.
-- [ ] `dtk update <name>` — make sure one tool is actually up to date. NOTE: `dtk update <tool>`
-      already exists and force-re-downloads. What is missing is the *checking*: comparing what is
-      cached against what the release/source now offers, and saying "already current" rather than
-      downloading regardless.
+- [x] `dtk fk` — deno rewrite of `~/Commands/kd`: same six pattern groups, plus the ports and
+      the docker containers. Takes the process table once per pass instead of re-running `ps` per
+      group, and polls until the pids are actually gone rather than sleeping 0.5 s and declaring
+      failure. Never signals its own pid, its parent, or anything with `claude` in it. `--dry-run`
+      lists without killing; verified that way (killing Jeff's live processes was not on).
+- [x] `dtk log` — prints the absolute path and opens it ($EDITOR first, then the desktop
+      opener); `--no-open` just prints, `--all` lists every log newest-first. A new `log_path.py`
+      asks dimos for `constants.LOG_DIR` and honours `DIMOS_RUN_LOG_DIR`. It deliberately does not
+      call `_get_log_file_path()`: with no run in progress that invents a fresh timestamped name
+      for a file nobody has written.
+- [x] `dtk update <name>` now checks before it downloads: a binary's cached etag+size is
+      compared against a HEAD of the release asset, so it says "already current" instead of
+      re-downloading; `--force` still downloads regardless. It also works for a binary while dtk
+      runs from a checkout, which it did not before.
 - [ ] `dtk run <args>` — a wrapper around `dimos run` built for an agent to read:
     1. behaves like `dimos run`
     2. prints the absolute path of the full jsonl log
