@@ -178,4 +178,18 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
       https://github.com/jeff-hykin/dim-urdf-editor — dtk's copy is the older `~/Commands/urdf-view`.
 
 - [ ] Turn https://github.com/jeff-hykin/dim-lcm-constellation into a standalone server/cli tool
-      and add it to dtk. Needs adaptation and a recompile.
+      and add it to dtk. Needs adaptation and a recompile. What it is made of, from reading it:
+    - `dim/apps/lcmflow/main.js` — a Deno backend that talks the dim-app websocket bus. dtk
+      already stands in for that host: `tools/urdf_edit.js` serves `/ws` and answers
+      `{data:[kind, payload]}`, which is the same protocol. Copy that.
+    - `dim/apps/lcmflow/spy/` — a Rust binary that passively sniffs LCM multicast and Zenoh and
+      prints newline-delimited JSON. **This is the recompile**: it needs a release workflow in
+      that repo publishing `spy-x86_64-linux`, `spy-aarch64-linux`, `spy-aarch64-macos`, exactly
+      like web_ctrl's, and then a `kind: "binary"` entry here.
+    - `dim/apps/lcmflow/frontend/` — index.html plus an icon. Vendor it next to
+      `tools/urdf_edit_files/`, including `theme.css`, the same way.
+    - The backend asks a dimos-helm server on `:1024` for blueprint metadata. Standalone there is
+      no helm, so that has to fall back to what the README says it used to do: parse the newest
+      run log's structured `Transport` events. `dtk log` already finds that log.
+    - Note `lcm_vendor/` is `@dimos/lcm@0.2.0` with a local fix (upstream never joins the
+      multicast group), so it cannot be swapped for the jsr import yet.
