@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="URDF View">
+  <defs>
+    <marker id="uf-z" viewBox="0 0 10 10" markerWidth="3.4" markerHeight="3.4" refX="1.5" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#5aa9ff"/>
+    </marker>
+    <marker id="uf-x" viewBox="0 0 10 10" markerWidth="3.4" markerHeight="3.4" refX="1.5" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#ff6b6b"/>
+    </marker>
+    <marker id="uf-y" viewBox="0 0 10 10" markerWidth="3.4" markerHeight="3.4" refX="1.5" refY="5" orient="auto" markerUnits="strokeWidth">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#5be37a"/>
+    </marker>
+  </defs>
+  <!-- triad nudged so its visual center lands at the viewBox center -->
+  <g transform="translate(2 4.5)">
+    <!-- z up (blue) -->
+    <path d="M30 34 L30 15" stroke="#5aa9ff" stroke-width="3" stroke-linecap="butt" marker-end="url(#uf-z)"/>
+    <!-- x down-right (red) -->
+    <path d="M30 34 L47 44" stroke="#ff6b6b" stroke-width="3" stroke-linecap="butt" marker-end="url(#uf-x)"/>
+    <!-- y down-left (green) -->
+    <path d="M30 34 L13 44" stroke="#5be37a" stroke-width="3" stroke-linecap="butt" marker-end="url(#uf-y)"/>
+    <!-- origin -->
+    <circle cx="30" cy="34" r="3.4" fill="#cfe8f2"/>
+  </g>
+</svg>

@@ -54,8 +54,10 @@ const SHAFT_RADIUS = 0.0035
 const HEAD_LENGTH = 0.022
 const LABEL_MARGIN = 0.014
 const LABEL_SCREEN_K = 0.02 // label world-height per unit camera distance (constant on-screen size)
+const SELECTED_ARROW_BOOST = 1.6 // selected frame's arrows grow so they stand out among overlapping nodes
 const COLORS = { x: 0xff5d5d, y: 0x5dff8a, z: 0x5d9bff }
 const AXIS_DIR = { x: new THREE.Vector3(1, 0, 0), y: new THREE.Vector3(0, 1, 0), z: new THREE.Vector3(0, 0, 1) }
+const scratchHSL = { h: 0, s: 0, l: 0 }
 
 function quaternionFromRpy(rpy) {
     const [roll, pitch, yaw] = rpy
@@ -81,6 +83,9 @@ function makeAxis(name, linkName) {
     )
     head.position.y = shaftLength + HEAD_LENGTH / 2
     group.add(shaft, head)
+    // remember the full-saturation color so styleFrame can desaturate non-focused frames
+    shaft.material.userData.baseColor = new THREE.Color(color)
+    head.material.userData.baseColor = new THREE.Color(color)
 
     // geometry points up +Y by default; rotate so it points along the named axis
     if (name === "x") {
@@ -152,10 +157,12 @@ export function buildFrames(viewer, model) {
         pickables.push(sphere)
 
         const markerMaterials = [sphere.material]
+        const axes = []
         for (const name of ["x", "y", "z"]) {
             const axis = makeAxis(name, linkName)
             group.add(axis)
             axisGroups.push(axis)
+            axes.push(axis)
             pickables.push(...axis.children)
             markerMaterials.push(...axis.children.map((child) => child.material))
         }
@@ -168,7 +175,7 @@ export function buildFrames(viewer, model) {
             group.add(makeVisualMesh(visual))
         }
 
-        framesByLink.set(linkName, { group, sphere, label, markerMaterials, name: linkName })
+        framesByLink.set(linkName, { group, sphere, label, markerMaterials, axes, name: linkName })
         return group
     }
 
@@ -252,12 +259,19 @@ export function buildFrames(viewer, model) {
         const isSelected = name === selected
         const isNeighbor = neighbors.has(name)
         const isHovered = name === hovered
-        // when something is selected, every other frame's markers go translucent
+        // when something is selected, every other frame's markers go translucent and
+        // drop to half saturation, so the focused frame reads as the vivid one
         const dim = selected && !isSelected && !isHovered
         const opacity = dim ? (isNeighbor ? 0.5 : 0.22) : 1
+        const saturation = dim ? 0.5 : 1
         for (const material of frame.markerMaterials) {
             material.transparent = opacity < 1
             material.opacity = opacity
+            const base = material.userData.baseColor
+            if (base) {
+                material.color.copy(base).getHSL(scratchHSL)
+                material.color.setHSL(scratchHSL.h, scratchHSL.s * saturation, scratchHSL.l)
+            }
         }
         frame.sphere.material.color.set(
             isHovered ? 0x5fe3ff : isSelected ? 0xffffff : isNeighbor ? 0xffd45d : 0x9aa7b4,
@@ -266,6 +280,7 @@ export function buildFrames(viewer, model) {
         frame.label.setState(
             isHovered || isSelected ? "selected" : isNeighbor ? "neighbor" : dim ? "dim" : "default",
         )
+        applyArrowScaleToFrame(name)
     }
 
     function setSelected(linkName) {
@@ -287,12 +302,25 @@ export function buildFrames(viewer, model) {
         styleFrame(linkName)
     }
 
-    function setArrowScale(factor) {
-        for (const axis of axisGroups) {
+    let globalArrowScale = 1
+    function arrowFactorFor(name) {
+        return globalArrowScale * (name === selected ? SELECTED_ARROW_BOOST : 1)
+    }
+    function applyArrowScaleToFrame(name) {
+        const frame = framesByLink.get(name)
+        if (!frame) {
+            return
+        }
+        const factor = arrowFactorFor(name)
+        for (const axis of frame.axes) {
             axis.scale.setScalar(factor)
         }
-        for (const frame of framesByLink.values()) {
-            frame.label.sprite.position.set(0, AXIS_LENGTH * factor + LABEL_MARGIN, 0)
+        frame.label.sprite.position.set(0, AXIS_LENGTH * factor + LABEL_MARGIN, 0)
+    }
+    function setArrowScale(factor) {
+        globalArrowScale = factor
+        for (const name of framesByLink.keys()) {
+            applyArrowScaleToFrame(name)
         }
     }
 
@@ -307,6 +335,66 @@ export function buildFrames(viewer, model) {
         }
     }
 
+    // Screen-space circle (pixels) of a frame's origin sphere, or null if behind the camera.
+    const SPHERE_WORLD_RADIUS = 0.008 // matches makeFrame's sphere geometry
+    const overlapWorldPos = new THREE.Vector3()
+    function frameScreenCircle(frame, width, height) {
+        frame.group.getWorldPosition(overlapWorldPos)
+        const ndc = overlapWorldPos.clone().project(viewer.camera)
+        if (ndc.z > 1) {
+            return null
+        }
+        const distance = viewer.camera.position.distanceTo(overlapWorldPos)
+        const fovY = (viewer.camera.fov * Math.PI) / 180
+        return {
+            cx: (ndc.x * 0.5 + 0.5) * width,
+            cy: (-ndc.y * 0.5 + 0.5) * height,
+            r: (SPHERE_WORLD_RADIUS * (height / 2)) / (Math.tan(fovY / 2) * distance),
+        }
+    }
+
+    // Fraction of the smaller circle's area covered by the intersection of two circles.
+    function circleOverlapFraction(a, b) {
+        const d = Math.hypot(a.cx - b.cx, a.cy - b.cy)
+        const ra = a.r
+        const rb = b.r
+        if (d >= ra + rb) {
+            return 0
+        }
+        if (d <= Math.abs(ra - rb)) {
+            return 1 // one fully inside the other
+        }
+        const p1 = ra * ra * Math.acos((d * d + ra * ra - rb * rb) / (2 * d * ra))
+        const p2 = rb * rb * Math.acos((d * d + rb * rb - ra * ra) / (2 * d * rb))
+        const p3 = 0.5 * Math.sqrt((-d + ra + rb) * (d + ra - rb) * (d - ra + rb) * (d + ra + rb))
+        return (p1 + p2 - p3) / (Math.PI * Math.min(ra, rb) ** 2)
+    }
+
+    // True when the pointer sits over two frame spheres that overlap >= 80% on screen —
+    // i.e. the "which node am I clicking?" situation.
+    const POINTER_SLACK = 6
+    const OVERLAP_THRESHOLD = 0.8
+    function overlapAtPointer(clientX, clientY) {
+        const rect = viewer.renderer.domElement.getBoundingClientRect()
+        const px = clientX - rect.left
+        const py = clientY - rect.top
+        const under = []
+        for (const frame of framesByLink.values()) {
+            const circle = frameScreenCircle(frame, rect.width, rect.height)
+            if (circle && Math.hypot(px - circle.cx, py - circle.cy) <= circle.r + POINTER_SLACK) {
+                under.push(circle)
+            }
+        }
+        for (let i = 0; i < under.length; i++) {
+            for (let j = i + 1; j < under.length; j++) {
+                if (circleOverlapFraction(under[i], under[j]) >= OVERLAP_THRESHOLD) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
+
     // Re-apply a joint's current xyz/rpy (e.g. after editing via the panel inputs).
     function applyJointToFrame(linkName) {
         const joint = model.jointByChild.get(linkName)
@@ -319,8 +407,21 @@ export function buildFrames(viewer, model) {
         refreshLines()
     }
 
+    // Tear down everything this build added to the scene, so the app can rebuild
+    // frames in place after the model changes (add/remove a frame, load a file).
+    function dispose() {
+        scene.remove(rootGroup)
+        for (const line of lines.values()) {
+            scene.remove(line)
+            line.geometry.dispose()
+        }
+        normalLineMaterial.dispose()
+        highlightLineMaterial.dispose()
+        window.removeEventListener("resize", syncLineResolution)
+    }
+
     return {
         framesByLink, pickables, refreshLines, setSelected, setHovered, neighborsOf,
-        setArrowScale, applyJointToFrame, updateLabelScales, getSelected: () => selected,
+        setArrowScale, applyJointToFrame, updateLabelScales, overlapAtPointer, getSelected: () => selected, dispose,
     }
 }

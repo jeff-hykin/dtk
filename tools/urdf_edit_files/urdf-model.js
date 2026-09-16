@@ -179,3 +179,80 @@ export function setJointRpy(joint, rpy) {
 export function serializeUrdf(model) {
     return new XMLSerializer().serializeToString(model.dom)
 }
+
+/**
+ * Add a new fixed child frame under `parentName`. Mutates the DOM + the model
+ * maps in place (so a stable model reference stays valid). Returns the new name.
+ */
+export function addChildFrame(model, parentName) {
+    let n = 1
+    let linkName = `frame_${n}`
+    while (model.links.includes(linkName)) {
+        linkName = `frame_${++n}`
+    }
+    const robot = model.dom.querySelector("robot")
+    const linkEl = model.dom.createElement("link")
+    linkEl.setAttribute("name", linkName)
+    robot.appendChild(linkEl)
+
+    const jointEl = model.dom.createElement("joint")
+    jointEl.setAttribute("name", `${linkName}_joint`)
+    jointEl.setAttribute("type", "fixed")
+    const parentEl = model.dom.createElement("parent")
+    parentEl.setAttribute("link", parentName)
+    const childEl = model.dom.createElement("child")
+    childEl.setAttribute("link", linkName)
+    const originEl = model.dom.createElement("origin")
+    originEl.setAttribute("xyz", "0 0 0")
+    originEl.setAttribute("rpy", "0 0 0")
+    jointEl.append(parentEl, childEl, originEl)
+    robot.appendChild(jointEl)
+
+    const joint = { name: `${linkName}_joint`, type: "fixed", parent: parentName, child: linkName, xyz: [0, 0, 0], rpy: [0, 0, 0], originEl }
+    model.links.push(linkName)
+    model.joints.push(joint)
+    model.jointByChild.set(linkName, joint)
+    model.childrenOf.set(linkName, [])
+    model.childrenOf.get(parentName)?.push(linkName)
+    model.visualsByLink.set(linkName, [])
+    return linkName
+}
+
+/**
+ * Remove a frame. Its children are re-parented to the removed frame's parent so
+ * the tree stays connected. Refuses to remove the root. Returns true if removed.
+ */
+export function removeFrame(model, name) {
+    if (name === model.root || !model.links.includes(name)) {
+        return false
+    }
+    const incoming = model.jointByChild.get(name)
+    const parent = incoming ? incoming.parent : null
+
+    for (const child of [...(model.childrenOf.get(name) ?? [])]) {
+        const cj = model.jointByChild.get(child)
+        if (!cj || !parent) {
+            continue
+        }
+        cj.parent = parent
+        cj.originEl.parentElement.querySelector("parent")?.setAttribute("link", parent)
+        model.childrenOf.get(parent)?.push(child)
+    }
+    if (parent) {
+        const siblings = model.childrenOf.get(parent)
+        const i = siblings.indexOf(name)
+        if (i >= 0) siblings.splice(i, 1)
+    }
+
+    for (const linkEl of model.dom.querySelectorAll("robot > link")) {
+        if (linkEl.getAttribute("name") === name) linkEl.remove()
+    }
+    incoming?.originEl.parentElement.remove()
+
+    model.links = model.links.filter((nm) => nm !== name)
+    model.joints = model.joints.filter((j) => j.child !== name)
+    model.jointByChild.delete(name)
+    model.childrenOf.delete(name)
+    model.visualsByLink.delete(name)
+    return true
+}

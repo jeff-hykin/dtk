@@ -2,6 +2,36 @@
 
 Add to this freely. Checked = done and verified.
 
+## Next up
+
+- [ ] `dtk fk` — a process killer modelled on `~/Commands/kd`, rewritten in deno and cleaned up.
+      `kd` is 81 lines of `ps | grep -E` over six pattern groups (dimos, native modules, Unity,
+      gazebo, ROS, orphaned tcpdumps). **Aggressively drop everything dimos-specific** — this one
+      is about killing processes, not about dimos.
+- [ ] `dtk log` — print the absolute path of the jsonl log and, by default, open it. Uses the
+      python side to find it, through the shared `dtk python` project resolution.
+- [ ] `dtk update <name>` — make sure one tool is actually up to date. NOTE: `dtk update <tool>`
+      already exists and force-re-downloads. What is missing is the *checking*: comparing what is
+      cached against what the release/source now offers, and saying "already current" rather than
+      downloading regardless.
+- [ ] `dtk run <args>` — a wrapper around `dimos run` built for an agent to read:
+    1. behaves like `dimos run`
+    2. prints the absolute path of the full jsonl log
+    3. always enables dtop
+    4. builds every native module first, so nothing stale is ever used
+    5. checks the blueprint for modules writing to the same topic and warns
+       `Warning, possible topic fighting on <topic> with [<module names>]`. Also prints topics that
+       look like misspellings: a dangling output on one module and a dangling input on another of
+       the same type but a different name, where neither name starts with `_`
+    6. hides ordinary module output and lets warnings through. Says when a module needs a full nix
+       build (hook `NativeModule` at runtime to notice a build command starting). De-duplicates
+       warnings and errors so they do not flood: split on the logger prefix rather than per line,
+       and ignore the timestamp when comparing. A module that dies gets a large, unmissable notice
+    7. starts a tf listener; if the tree is broken or inconsistent after the first 30 s it warns.
+       One warning per KIND of breakage (multiple parents, multiple trees) but it keeps watching
+    8. every 60 s prints the Hz of topics above 0.5 Hz, and which modules are using a lot of CPU
+       or memory
+
 ## `dtk data <verb>` — one namespace for recordings
 
 Every verb takes a recording and works out for itself whether it is a memory2 `.db` or an
@@ -138,3 +168,6 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
 
 - [ ] Bring `urdf_edit` up to date with the upgrades in
       https://github.com/jeff-hykin/dim-urdf-editor — dtk's copy is the older `~/Commands/urdf-view`.
+
+- [ ] Turn https://github.com/jeff-hykin/dim-lcm-constellation into a standalone server/cli tool
+      and add it to dtk. Needs adaptation and a recompile.

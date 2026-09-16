@@ -92,14 +92,17 @@ export const tools = [
         entry: "tools/urdf_edit.js",
         extraFiles: [
             "tools/urdf_edit_files/index.html",
-            "tools/urdf_edit_files/main.js",
+            "tools/urdf_edit_files/app.js",
             "tools/urdf_edit_files/controls.js",
             "tools/urdf_edit_files/editor.js",
             "tools/urdf_edit_files/frames.js",
+            "tools/urdf_edit_files/icon.svg",
+            "tools/urdf_edit_files/theme.css",
             "tools/urdf_edit_files/urdf-model.js",
             "tools/urdf_edit_files/viewer.js",
         ],
-        permissions: ["--allow-read", "--allow-net", "--allow-run", "--allow-env"],
+        // --allow-write because Save puts the edited URDF on disk
+        permissions: ["--allow-read", "--allow-write", "--allow-net", "--allow-run", "--allow-env"],
     },
     {
         name: "heatmap",
