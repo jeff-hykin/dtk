@@ -61,6 +61,10 @@ dtk doctor              # platform, cache location, where dtk itself came from
 
 The cache is `$XDG_CACHE_HOME/dtk`, or `~/.cache/dtk`. Override it with `DTK_CACHE`.
 
+A downloaded tool is kept until something says otherwise, so **bump `version` in `version.js`
+when you change anything under `tools/`** — that is what tells an existing install its copy is
+stale. `dtk update` forces a re-download either way.
+
 ## Adding a tool
 
 **A script tool:** drop it in `tools/`, then add an entry to `registry.js`:

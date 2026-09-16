@@ -22,7 +22,11 @@ export const cacheDir = (() => {
 
 const stampOf = (tool) => `${cacheDir}/tools/${tool.name}/.stamp`
 
-const currentStamp = (tool) => `${version}\n${sourceBase}\n`
+// Bump `version` in version.js after changing anything under tools/, or an
+// install that already cached a tool will happily keep the old copy. `dtk
+// update` is the escape hatch either way.
+const currentStamp = (tool) =>
+    [version, sourceBase, tool.entry, ...(tool.extraFiles || [])].join("\n") + "\n"
 
 export function isDownloaded(tool) {
     if (runningFromSource) {
@@ -37,10 +41,20 @@ export function isDownloaded(tool) {
         }
     }
     try {
-        return Deno.readTextFileSync(stampOf(tool)) === currentStamp(tool)
+        if (Deno.readTextFileSync(stampOf(tool)) !== currentStamp(tool)) {
+            return false
+        }
+        // The stamp is about what was fetched, not about what survived; a cache
+        // someone deleted half of should download again rather than fail later.
+        Deno.statSync(scriptPathOf(tool))
+        return true
     } catch (error) {
         return false
     }
+}
+
+export function scriptPathOf(tool) {
+    return `${cacheDir}/tools/${tool.name}/${tool.entry.replace(/^tools\//, "")}`
 }
 
 export function binaryPathOf(tool) {
@@ -63,6 +77,12 @@ async function ensureScript(tool, { force }) {
     const localPathOf = (relativePath) => `${folder}/${relativePath.replace(/^tools\//, "")}`
     if (!force && isDownloaded(tool)) {
         return localPathOf(tool.entry)
+    }
+    // A rename inside tools/ would otherwise leave the old file sitting there.
+    try {
+        Deno.removeSync(folder, { recursive: true })
+    } catch (error) {
+        // nothing cached yet
     }
     console.error(`dtk: downloading ${tool.name}`)
     for (const relativePath of [tool.entry, ...(tool.extraFiles || [])]) {

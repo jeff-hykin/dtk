@@ -1,6 +1,6 @@
 import { Command } from "jsr:@cliffy/command@1.0.0-rc.7"
 import { toolsByName } from "../registry.js"
-import { binaryPathOf, cacheDir, runningFromSource, sourceBase } from "../tool_store.js"
+import { binaryPathOf, runningFromSource, scriptPathOf, sourceBase } from "../tool_store.js"
 
 export default new Command()
     .name("where")
@@ -16,6 +16,6 @@ export default new Command()
         } else if (runningFromSource) {
             console.log(new URL(tool.entry, sourceBase).pathname)
         } else {
-            console.log(`${cacheDir}/tools/${tool.name}/${tool.entry.replace(/^tools\//, "")}`)
+            console.log(scriptPathOf(tool))
         }
     })
