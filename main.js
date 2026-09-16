@@ -11,7 +11,15 @@ import { version } from "./version.js"
 // so this runs before cliffy sees anything.
 const [first, ...rest] = Deno.args
 if (toolsByName[first]) {
-    Deno.exit(await runTool(toolsByName[first], rest))
+    try {
+        Deno.exit(await runTool(toolsByName[first], rest))
+    } catch (error) {
+        if (!(error instanceof DtkError)) {
+            throw error
+        }
+        console.error(error.message)
+        Deno.exit(2)
+    }
 }
 
 let cli = new Command()

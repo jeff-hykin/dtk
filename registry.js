@@ -204,12 +204,14 @@ export const tools = [
             "aarch64-apple-darwin": "lite_record-aarch64-macos",
         },
         // Its linux builds are nix's, and they are not static: the camera SDKs
-        // are dynamic libraries living in /nix/store. The release carries the
-        // runtime closure beside each binary so it can be imported here.
-        // The mac build is plain cargo and needs nothing.
-        nixClosure: {
-            "x86_64-unknown-linux-gnu": "lite_record-x86_64-linux.closure.gz",
-            "aarch64-unknown-linux-gnu": "lite_record-aarch64-linux.closure.gz",
+        // are dynamic libraries living in /nix/store. The release carries a
+        // tarball of exactly those store paths beside each binary; dtk unpacks
+        // it and runs the binary through the loader inside it, so the target
+        // needs neither nix nor root. The mac build is plain cargo and needs
+        // nothing.
+        runtime: {
+            "x86_64-unknown-linux-gnu": "lite_record-x86_64-linux.runtime.tar.gz",
+            "aarch64-unknown-linux-gnu": "lite_record-aarch64-linux.runtime.tar.gz",
         },
     },
     {

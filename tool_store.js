@@ -110,7 +110,7 @@ async function ensureBinary(tool, { force }) {
         // downloaded the binary and then failed to import its closure, and
         // running it in that state fails with a bare "no such file" from the
         // kernel looking for an interpreter that is not there.
-        await ensureNixClosure(tool, target)
+        await ensureRuntime(tool, target)
         return destination
     }
     const assetName = tool.assets[target]
@@ -126,92 +126,95 @@ async function ensureBinary(tool, { force }) {
     await downloadAsset(tool, assetName, temporaryPath)
     Deno.chmodSync(temporaryPath, 0o755)
     Deno.renameSync(temporaryPath, destination)
-    await ensureNixClosure(tool, target, { force })
+    await ensureRuntime(tool, target, { force })
     return destination
 }
 
 // Some of these binaries come out of nix and are not static: they name
 // /nix/store paths as their ELF interpreter and RUNPATH, because the libraries
-// they need are dynamic. The release carries a gzipped `nix-store --export` of
-// the runtime closure beside each one, and importing that is what makes those
-// paths exist here.
-async function ensureNixClosure(tool, target, { force = false } = {}) {
-    const assetName = tool.nixClosure?.[target]
+// they need are dynamic. The release carries a tarball of exactly those store
+// paths beside each one; unpacking it into the cache is what makes them exist.
+//
+// Deliberately not `nix-store --import`: that needs nix on this machine AND a
+// trusted user, because the paths are unsigned, and a plain account on a plain
+// machine is neither. A tarball needs neither -- the binary is then run through
+// the loader inside it, so the absolute paths baked into the ELF never matter.
+async function ensureRuntime(tool, target, { force = false } = {}) {
+    const assetName = tool.runtime?.[target]
     if (assetName === undefined) {
         return
     }
-    const stamp = `${binaryPathOf(tool)}.closure`
+    const folder = runtimePathOf(tool)
+    const stamp = `${folder}/.stamp`
     if (!force) {
         try {
-            Deno.statSync(stamp)
-            return
+            if (Deno.readTextFileSync(stamp).trim() === assetName) {
+                return
+            }
         } catch (error) {
-            // not imported yet
+            // not unpacked yet
         }
     }
-    let nixVersion = null
-    try {
-        const probe = await new Deno.Command("nix", {
-            args: ["--version"],
-            stdout: "piped",
-            stderr: "null",
-        }).output()
-        nixVersion = new TextDecoder().decode(probe.stdout).trim()
-    } catch (error) {
-        nixVersion = null
-    }
-    if (nixVersion === null) {
-        throw new DtkError(
-            `dtk: ${tool.name} for ${target} is built by nix and needs nix here to run.\n` +
-            `     Install it, then run \`dtk update ${tool.name}\`:\n` +
-            `       curl -fsSL https://install.determinate.systems/nix | sh -s -- install`,
-        )
-    }
-    console.error(`dtk: fetching what ${tool.name} needs at runtime (${nixVersion})`)
-    const archive = `${binaryPathOf(tool)}.closure.gz`
+    console.error(`dtk: fetching the libraries ${tool.name} needs at runtime`)
+    const archive = `${folder}.tar.gz`
+    Deno.mkdirSync(folder.replace(/\/[^/]+$/, ""), { recursive: true })
     await downloadAsset(tool, assetName, archive)
-    const importer = new Deno.Command("nix-store", {
-        args: ["--import"],
-        stdin: "piped",
-        stdout: "null",
-        stderr: "piped",
-    }).spawn()
-    const complaints = []
-    const watching = (async () => {
-        for await (const chunk of importer.stderr.pipeThrough(new TextDecoderStream())) {
-            complaints.push(chunk)
-            await Deno.stderr.write(new TextEncoder().encode(chunk))
-        }
-    })()
-    const file = await Deno.open(archive, { read: true })
     try {
-        await file.readable
-            .pipeThrough(new DecompressionStream("gzip"))
-            .pipeTo(importer.stdin)
+        Deno.removeSync(folder, { recursive: true })
     } catch (error) {
-        // nix-store gave up early and closed its end; its own complaint below is
-        // the useful one, not "broken pipe"
-        if (!(error instanceof Deno.errors.BrokenPipe)) {
-            throw error
-        }
+        // nothing unpacked yet
     }
-    const { success } = await importer.status
-    await watching
+    Deno.mkdirSync(folder, { recursive: true })
+    const { success } = await new Deno.Command("tar", {
+        args: ["-xzf", archive, "-C", folder],
+        stdout: "inherit",
+        stderr: "inherit",
+    }).output()
     Deno.removeSync(archive)
     if (!success) {
-        const said = complaints.join("")
-        if (said.includes("lacks a signature by a trusted key")) {
-            throw new DtkError(
-                `dtk: nix refused ${tool.name}'s runtime closure because you are not a trusted\n` +
-                `     user, and these paths are unsigned. Add yourself, then try again:\n` +
-                `       echo "trusted-users = root $(whoami)" | sudo tee -a /etc/nix/nix.conf\n` +
-                `       sudo systemctl restart nix-daemon   # or: sudo pkill nix-daemon\n` +
-                `     On Jeff's machines \`nix_add_self_as_trusted_user\` does the same thing.`,
-            )
-        }
-        throw new DtkError(`dtk: could not import ${tool.name}'s runtime closure`)
+        throw new DtkError(`dtk: could not unpack ${tool.name}'s runtime libraries`)
     }
     Deno.writeTextFileSync(stamp, `${assetName}\n`)
+}
+
+export function runtimePathOf(tool) {
+    return `${cacheDir}/runtime/${tool.name}`
+}
+
+// Every `lib` directory in the unpacked closure, and the loader among them. The
+// loader is found by name rather than by reading the ELF's PT_INTERP: there is
+// exactly one ld-linux/ld-musl in a closure, and globbing for it is a great deal
+// less code than parsing program headers to learn the same thing.
+function loaderAndLibraries(folder) {
+    const store = `${folder}/nix/store`
+    const libraries = []
+    let loader = null
+    let entries = []
+    try {
+        entries = [...Deno.readDirSync(store)]
+    } catch (error) {
+        return { loader: null, libraries: [] }
+    }
+    for (const entry of entries) {
+        const lib = `${store}/${entry.name}/lib`
+        try {
+            if (!Deno.statSync(lib).isDirectory) {
+                continue
+            }
+        } catch (error) {
+            continue
+        }
+        libraries.push(lib)
+        if (loader === null) {
+            for (const inside of Deno.readDirSync(lib)) {
+                if (/^ld-(linux|musl)[^/]*\.so(\.\d+)?$/.test(inside.name)) {
+                    loader = `${lib}/${inside.name}`
+                    break
+                }
+            }
+        }
+    }
+    return { loader, libraries }
 }
 
 // The plain fetch first, then `gh`, which already has credentials for a private repo.
@@ -288,8 +291,21 @@ export async function runTool(tool, args) {
             stderr: "inherit",
         })
     } else {
-        command = new Deno.Command(path, {
-            args: args,
+        let program = path
+        let leading = []
+        if (tool.runtime?.[Deno.build.target]) {
+            const { loader, libraries } = loaderAndLibraries(runtimePathOf(tool))
+            if (loader === null) {
+                throw new DtkError(
+                    `dtk: ${tool.name}'s runtime libraries are not unpacked; run ` +
+                    `\`dtk update ${tool.name}\``,
+                )
+            }
+            program = loader
+            leading = ["--library-path", libraries.join(":"), path]
+        }
+        command = new Deno.Command(program, {
+            args: [...leading, ...args],
             stdin: "inherit",
             stdout: "inherit",
             stderr: "inherit",

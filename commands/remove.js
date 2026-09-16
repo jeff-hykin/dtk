@@ -1,6 +1,6 @@
 import { Command } from "jsr:@cliffy/command@1.0.0-rc.7"
 import { toolsByName } from "../registry.js"
-import { binaryPathOf, cacheDir } from "../tool_store.js"
+import { binaryPathOf, cacheDir, runtimePathOf } from "../tool_store.js"
 
 export default new Command()
     .name("remove")
@@ -19,12 +19,10 @@ export default new Command()
             console.log(`${tool.name} was not downloaded`)
         }
         if (tool.kind === "binary") {
-            // the note saying its nix closure is already imported; the store
-            // paths themselves stay, for nix's own garbage collection to decide
             try {
-                Deno.removeSync(`${path}.closure`)
+                Deno.removeSync(runtimePathOf(tool), { recursive: true })
             } catch (error) {
-                // there was none
+                // it had no unpacked runtime libraries
             }
         }
     })
