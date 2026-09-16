@@ -217,5 +217,6 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
     - [x] the desktop's `/api/dimos-info` is replaced by `tools/blueprint_graph.py`, which reads
           the blueprint the way `dtk run` does; the running blueprint still comes from the dimos
           run registry, exactly as the original backend read it.
-    - [ ] NOT YET VERIFIED end to end: it needs the spy release to finish building and a live
-          `dimos run` to watch. Until then this is wired, not proven.
+    - [x] verified end to end on CudaLaptop against a live `coordinator-mock`: the bus announces
+          the host, the graph arrives with ControlCoordinator and its streams, and real spy frames
+          follow — `["lcm","/coordinator_joint_state#sensor_msgs.JointState",5,1625]`.
