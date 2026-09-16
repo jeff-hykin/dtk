@@ -21,9 +21,13 @@ one of the two, it says so and stops rather than half-working.
 - [x] `dtk data topic delete <recording> <topic>`
     - mcap: `mcap_edit --delete TOPIC`
     - db: `db_delete <db> <stream>`
-- [~] `dtk data topic copy --from A --to B --topic NAME` — db done, mcap not
+- [x] `dtk data topic copy --from A --to B --topic NAME`
     - db: `db_cp --from --to --stream`
-    - mcap: nothing exists yet — new, and harder (chunks)
+    - mcap: a new `mcap_edit --copy-topic-from OTHER.mcap:TOPIC`. Nothing already in the
+      destination moves: the new chunks land where the old summary started and a fresh summary
+      is written past them, so it costs the size of what is copied, not of the file it lands in.
+      The channel and schema are renumbered on the way in.
+    - [ ] copying between a .db and an .mcap still means converting one first
 
 ### tf
 

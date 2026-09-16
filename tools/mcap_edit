@@ -775,6 +775,13 @@ def main():
                         help="left-multiply the pose on a nav_msgs/Odometry topic (repeatable). "
                              "The twist is NOT rotated: it is expressed in the child frame, which "
                              "a parent-side correction does not move")
+    parser.add_argument("--copy-topic-from", metavar="OTHER.mcap:TOPIC",
+                        help="append every message on this topic, from another mcap, into this "
+                             "one. Nothing already here moves: the new chunks land where the old "
+                             "summary started and a fresh summary is written past them, so it "
+                             "costs the size of what is copied rather than the size of the file "
+                             "it lands in. The channel and schema are renumbered on the way in. "
+                             "Runs on its own, after any other change")
     parser.add_argument("--cut-at", type=float, metavar="SECONDS",
                         help="cut the recording in two at this many seconds past its first "
                              "message and write the pieces named by --head and --tail. The "
@@ -821,13 +828,26 @@ def main():
         mcap = Mcap(arguments.recording)
         split(mcap, arguments.recording, arguments.cut_at, arguments.head, arguments.tail)
         return
+    if arguments.copy_topic_from:
+        if ":" not in arguments.copy_topic_from:
+            sys.exit(f"--copy-topic-from wants OTHER.mcap:TOPIC, got {arguments.copy_topic_from!r}")
+        other, topic = arguments.copy_topic_from.rsplit(":", 1)
+        mcap = Mcap(arguments.recording)
+        print(f"{arguments.recording.name}: {mcap.size:,} bytes, {len(mcap.chunk_indexes)} chunks, "
+              f"{len(mcap.channels)} channels")
+        holders = other_readers(arguments.recording)
+        if holders and not arguments.force and not arguments.dry_run:
+            sys.exit(f"{', '.join(holders)} has this file open; stop it, or pass --force")
+        copy_topic_in(mcap, other, topic, arguments.dry_run)
+        return
+
     if not (renames or deletes or arguments.post_mul_tf_edge or arguments.post_mul_odom
             or arguments.pre_mul_tf_edge or arguments.pre_mul_odom
             or arguments.drop_tf_edge or arguments.rename_tf_frame or arguments.namespace_tf
             or arguments.compact):
         sys.exit("nothing to do: pass --rename, --delete, --drop-tf-edge, --rename-tf-frame, "
                  "--namespace-tf, --post-mul-tf-edge, --pre-mul-tf-edge, --post-mul-odom, "
-                 "--pre-mul-odom, --compact or --cut-at")
+                 "--pre-mul-odom, --copy-topic-from, --compact or --cut-at")
     if renames.keys() & deletes:
         sys.exit("a topic cannot be both renamed and deleted")
 
@@ -1077,6 +1097,134 @@ def compact(mcap, path):
     os.replace(temp, path)
     print(f"compacted {mcap.size:,} -> {written:,} bytes "
           f"({mcap.size - written:,} of holes and filler closed); {time.monotonic() - started:.0f}s")
+
+
+# ---------------------------------------------------------------- copying a topic in
+
+CHUNK_TARGET = 4 << 20
+
+
+def copy_topic_in(mcap, source_path, topic, dry_run):
+    """Append every message on `topic` from another mcap into this one.
+
+    Nothing already in the file moves. The new chunks go where the old summary
+    started -- over the top of its DataEnd, exactly as an edit's rewritten chunks
+    do -- and then a fresh summary is written past them, so the cost is the size
+    of what is being copied rather than the size of the file it lands in.
+
+    The channel and schema are renumbered on the way in: ids are per-file, and
+    the source's are almost certainly already taken here."""
+    source = Mcap(source_path)
+    matches = [channel for channel in source.channels.values() if channel.topic == topic]
+    if not matches:
+        sys.exit(f"no topic named {topic!r} in {source_path}")
+    origin = matches[0]
+    if any(channel.topic == topic for channel in mcap.channels.values()):
+        sys.exit(f"{topic!r} is already a topic in this file; --delete it first, then copy")
+
+    count = (source.statistics or {}).get("channel_message_counts", {}).get(origin.id, 0)
+    print(f"  copy {topic} from {Path(source_path).name} "
+          f"({count:,} messages, {source.schemas.get(origin.schema_id, 'no schema')})")
+    if dry_run:
+        print("dry run: nothing written")
+        return
+
+    new_channel_id = max(mcap.channels, default=-1) + 1
+    new_schema_id = 0
+    if origin.schema_id:
+        new_schema_id = max(mcap.schema_records, default=0) + 1
+        body = source.schema_records[origin.schema_id][RECORD_OVERHEAD:]
+        mcap.schema_records[new_schema_id] = record(
+            OP_SCHEMA, struct.pack("<H", new_schema_id) + body[2:])
+        mcap.schemas[new_schema_id] = source.schemas.get(origin.schema_id, "")
+    channel = Channel(new_channel_id, new_schema_id, topic,
+                      origin.message_encoding, list(origin.metadata))
+    mcap.channels[new_channel_id] = channel
+
+    # Whatever the file already uses, so one recording does not end up half zstd
+    # and half uncompressed.
+    compression = mcap.chunk_indexes[0]["compression"] if mcap.chunk_indexes else "zstd"
+
+    write_at = mcap.data_end_offset
+    indexes = list(mcap.chunk_indexes)
+    # The schema and channel are declared once, at the head of the first new
+    # chunk, which is where a reader walking the data section meets them.
+    pending = bytearray()
+    if new_schema_id:
+        pending.extend(mcap.schema_records[new_schema_id])
+    pending.extend(channel.encode())
+    entries = []
+    span = [None, None]
+    copied = 0
+    added_chunks = 0
+
+    def flush():
+        nonlocal write_at, pending, entries, span, added_chunks
+        if not entries:
+            return
+        blob = bytes(pending)
+        chunk = encode_chunk(span[0], span[1], blob, compression)
+        index_bytes = encode_message_index(new_channel_id, entries)
+        indexes.append({
+            "message_start_time": span[0],
+            "message_end_time": span[1],
+            "chunk_start_offset": write_at,
+            "chunk_length": len(chunk),
+            "message_index_offsets": [(new_channel_id, write_at + len(chunk))],
+            "message_index_length": len(index_bytes),
+            "compression": compression,
+            "compressed_size": struct.unpack_from(
+                "<Q", chunk, RECORD_OVERHEAD + 8 + 8 + 8 + 4 + 4 + len(compression))[0],
+            "uncompressed_size": len(blob),
+        })
+        mcap.file.seek(write_at)
+        mcap.file.write(chunk)
+        mcap.file.write(index_bytes)
+        write_at += len(chunk) + len(index_bytes)
+        added_chunks += 1
+        pending = bytearray()
+        entries = []
+        span = [None, None]
+
+    for index in source.chunk_indexes:
+        if origin.id not in {channel_id for channel_id, _ in index["message_index_offsets"]}:
+            continue
+        _, _, _, blob = source.read_chunk(index)
+        for opcode, body in walk_chunk(blob):
+            if opcode != OP_MESSAGE:
+                continue
+            channel_id, _, log_time = struct.unpack_from("<HIQ", body, 0)
+            if channel_id != origin.id:
+                continue
+            entries.append((log_time, len(pending)))
+            pending.extend(record(OP_MESSAGE, struct.pack("<H", new_channel_id) + body[2:]))
+            span[0] = log_time if span[0] is None else min(span[0], log_time)
+            span[1] = log_time if span[1] is None else max(span[1], log_time)
+            copied += 1
+            if len(pending) >= CHUNK_TARGET:
+                flush()
+        if len(pending) >= CHUNK_TARGET:
+            flush()
+    flush()
+
+    if copied == 0:
+        sys.exit(f"{topic!r} has no messages in {source_path}; nothing copied")
+
+    if mcap.statistics is not None:
+        stats = mcap.statistics
+        stats["channel_message_counts"][new_channel_id] = copied
+        stats["chunk_count"] = stats.get("chunk_count", 0) + added_chunks
+        earliest = min(each["message_start_time"] for each in indexes)
+        latest = max(each["message_end_time"] for each in indexes)
+        stats["message_start_time"] = earliest
+        stats["message_end_time"] = latest
+
+    _write_tail(mcap, write_at, indexes, {}, set())
+    mcap.file.flush()
+    os.fsync(mcap.file.fileno())
+    mcap.file.close()
+    print(f"copied {copied:,} message(s) into {added_chunks} new chunk(s)")
+    verify(mcap.path)
 
 
 # ---------------------------------------------------------------- cutting in two

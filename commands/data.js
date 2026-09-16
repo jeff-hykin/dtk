@@ -109,15 +109,23 @@ const topic = new Command()
             .action(async (options) => {
                 const from = requireFormat(options.from, ["db", "mcap"], "topic copy")
                 const to = requireFormat(options.to, ["db", "mcap"], "topic copy")
-                if (from !== "db" || to !== "db") {
-                    console.error(notYet("copying a topic in or out of an .mcap"))
+                if (from !== to) {
+                    console.error(
+                        `dtk data topic copy: one is a .db and the other an .mcap. Convert one ` +
+                        `first with \`dtk data to_db\` or \`dtk data to_mcap\`.`,
+                    )
                     Deno.exit(2)
                 }
-                Deno.exit(await runTool(toolsByName["db_cp"], [
-                    "--from", options.from,
-                    "--to", options.to,
-                    "--stream", options.topic,
-                ]))
+                const plan = to === "db"
+                    ? {
+                        tool: "db_cp",
+                        args: ["--from", options.from, "--to", options.to, "--stream", options.topic],
+                    }
+                    : {
+                        tool: "mcap_edit",
+                        args: [options.to, "--copy-topic-from", `${options.from}:${options.topic}`],
+                    }
+                Deno.exit(await runTool(toolsByName[plan.tool], plan.args))
             }),
     )
 

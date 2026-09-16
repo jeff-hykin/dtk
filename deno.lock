@@ -100,6 +100,7 @@
     }
   },
   "redirects": {
+    "https://esm.sh/@foxglove/cdr@^3.3.0?target=denonext": "https://esm.sh/@foxglove/cdr@3.5.1?target=denonext",
     "https://esm.sh/@foxglove/crc@^0.0.3?target=denonext": "https://esm.sh/@foxglove/crc@0.0.3?target=denonext",
     "https://esm.sh/@jsr/std__fmt@^1.0.10/colors?target=denonext": "https://esm.sh/jsr/@std/fmt@1.0.10/colors?target=denonext",
     "https://esm.sh/@jsr/std__text@^1.0.19/closest-string?target=denonext": "https://esm.sh/jsr/@std/text@1.0.19/closest-string?target=denonext",
@@ -108,8 +109,14 @@
     "https://esm.sh/tslib@^2.6.2?target=denonext": "https://esm.sh/tslib@2.8.1?target=denonext"
   },
   "remote": {
+    "https://esm.sh/@foxglove/cdr@3.5.1/denonext/cdr.mjs": "198493f9fd79ff04f13c8e63f698253f4b9068ed912ff1a34ba5472f6ad49692",
+    "https://esm.sh/@foxglove/cdr@3.5.1?target=denonext": "b23df79e7b316daceb464b71c0fc71be57a4091d2556a6363c943ab5028d0520",
     "https://esm.sh/@foxglove/crc@0.0.3/denonext/crc.mjs": "9dd583a7f622853fa3dabaea2b51760447d65e9419692fa502d67b17146475b8",
     "https://esm.sh/@foxglove/crc@0.0.3?target=denonext": "7933211c0d0def623e465307f3a8579fdc2af9e52f3a4b5b17dcf7fd76241e25",
+    "https://esm.sh/@foxglove/rosmsg2-serialization@3.0.1": "4c04427b5632f298c9024ae72170fd8c9c65fb9d4741e56df4fe4c65bdb1b65d",
+    "https://esm.sh/@foxglove/rosmsg2-serialization@3.0.1/denonext/rosmsg2-serialization.mjs": "072a9bafca492ab5d23cfb9dcf645764e12f5dcac6d5375cd0985c246f25871e",
+    "https://esm.sh/@foxglove/rosmsg@5.0.4": "2921e7d0d214fb7d6c8047e9c9675db6b553a59c321fd05e520300ff60396c1a",
+    "https://esm.sh/@foxglove/rosmsg@5.0.4/denonext/rosmsg.mjs": "cb64fcbd92903a9e788ad3489b2815ec5e23e360284a8b1c6454bcadc32da2b0",
     "https://esm.sh/@jsr/cliffy__command@1.2.1/denonext/_errors.mjs": "e8eb2d7064c25ace38c5f8cdd302d98b16e0fd5408531b19bb92ebb8c103a895",
     "https://esm.sh/@jsr/cliffy__command@1.2.1/denonext/_utils.mjs": "3ccc6173808d0ace18eb852001d186d0c65942de9ad296d2d83fad428c0b8a5f",
     "https://esm.sh/@jsr/cliffy__command@1.2.1/denonext/cliffy__command.mjs": "441aa69abd0efd5568ff00053a24f64045d36dbab7c8d0d1ff0bf1d2942da7af",
@@ -154,6 +161,8 @@
     "https://esm.sh/@jsr/std__fmt@1.0.10/denonext/colors.mjs": "51b702f89db2fd9cac1669cbbefb0d0c13f7d95bb146404a98eab84f4d873b7d",
     "https://esm.sh/@jsr/std__text@1.0.19/denonext/closest-string.mjs": "cfb673b9207fab6ca9c5afd4dde9e40bdb9cda4c373e698a06aec655734d26b9",
     "https://esm.sh/@jsr/std__text@1.0.19/denonext/levenshtein-distance.mjs": "a4650ad6d704982c3bb54da09c86eaead1c8747783fc2ce4b1fd6129dc75988d",
+    "https://esm.sh/@mcap/core@2.1.6": "efb3fe235b2b0182983415990146304d7e59b77e59ea7ce7055e7509a932d723",
+    "https://esm.sh/@mcap/core@2.1.6/denonext/core.mjs": "adc94135ac982cd9e02bbe2072180f2c0c2ccfbcfc7ea38c457b18efbd110ed6",
     "https://esm.sh/@mcap/core@2.1.7": "1a9c73924c903e1f9e0148a91dddd898a8fb1448e768e70a2a58b2c61b69cd40",
     "https://esm.sh/@mcap/core@2.1.7/denonext/core.mjs": "ec86882da8585bf385163869e99abaa301308dc6febfad8ec37835ac2e4110f0",
     "https://esm.sh/apache-arrow@18.1.0": "7a07eb7986fdb750620df74d1c0245fcca8bbf401d016fefe8b5a989438154e8",
