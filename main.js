@@ -38,4 +38,11 @@ for (const tool of tools) {
     )
 }
 
-await cli.parse(Deno.args)
+try {
+    await cli.parse(Deno.args)
+} catch (error) {
+    // `dtk list | head` closes the pipe on us partway through; that is not an error
+    if (!(error instanceof Deno.errors.BrokenPipe)) {
+        throw error
+    }
+}
