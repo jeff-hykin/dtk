@@ -29,9 +29,7 @@ const currentStamp = (tool) =>
     [version, sourceBase, tool.entry, ...(tool.extraFiles || [])].join("\n") + "\n"
 
 export function isDownloaded(tool) {
-    if (runningFromSource) {
-        return true
-    }
+    // a binary is never in the checkout, so this one is asked even from source
     if (tool.kind === "binary") {
         try {
             Deno.statSync(binaryPathOf(tool))
@@ -39,6 +37,9 @@ export function isDownloaded(tool) {
         } catch (error) {
             return false
         }
+    }
+    if (runningFromSource) {
+        return true
     }
     try {
         if (Deno.readTextFileSync(stampOf(tool)) !== currentStamp(tool)) {
