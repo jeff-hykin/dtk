@@ -97,7 +97,10 @@ export default new Command()
         const spy = toolsByName["spy"]
         const spyPath = await ensureDownloaded(spy)
 
-        const webDirectory = new URL("../tools/constellation_files/", sourceBase).href
+        // sourceBase is the root dtk was loaded from -- the repo when running from
+        // a checkout, the raw url when installed -- so this is relative to that,
+        // not to this file.
+        const webDirectory = new URL("tools/constellation_files/", sourceBase).href
         const readWebFile = async (name) => {
             const target = new URL(name.replace(/^\//, ""), webDirectory)
             if (target.protocol === "file:") {
