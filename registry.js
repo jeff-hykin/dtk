@@ -34,6 +34,14 @@ export const tools = [
         permissions: ["--allow-read", "--allow-env", "--allow-ffi", "--unstable-ffi"],
     },
     {
+        name: "tf_check",
+        kind: "deno",
+        description: "Report every defect in a recording's tf tree",
+        entry: "tools/tf_check.js",
+        formats: ["db", "mcap"],
+        permissions: denoRecordingPermissions,
+    },
+    {
         name: "db_cp",
         kind: "deno",
         description: "Copy one stream from one memory2 .db into another",

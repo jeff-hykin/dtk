@@ -25,10 +25,13 @@ one of the two, it says so and stops rather than half-working.
 
 ### tf
 
-- [ ] `dtk data tf full_check <recording>` — decide what it actually asserts. Candidates: a frame
-      with two parents, a cycle, a disconnected subtree, an edge that stops partway through the
-      recording, a static edge that also appears dynamically, a frame referenced by a message but
-      never published. `db_tree` prints the tree today but checks nothing.
+- [x] `dtk data tf full_check <recording>` — new `tf_check` tool, db and mcap. Reads every tf
+      message in the file, not a window at the start, and reports: a frame with two parents, a
+      cycle, more than one root, an edge that stops early or starts late relative to the
+      recording, an edge published both statically and dynamically, and an edge published exactly
+      once on a dynamic stream. Exits 1 when it finds anything. Only `tf` + `tf_static` by
+      default; `--all-streams` folds in rival TFMessage streams too.
+    - [ ] still missing from it: a frame referenced by a message header but never published
 - [ ] `dtk data tf rename <recording> <old> <new>` — rename a *frame*. `mcap_edit` can drop an edge
       and correct a transform but cannot rename a frame, so this is new for both formats.
 - [ ] `dtk data tf add <recording> <json>` — add an edge. Settle the json shape: parent, child,

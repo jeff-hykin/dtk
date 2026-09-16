@@ -135,18 +135,13 @@ const tf = new Command()
             },
         }),
     )
-    .command(
-        "full_check",
-        new Command()
-            .name("full_check")
-            .description("Report every defect in the tf tree")
-            .usage("<recording>")
-            .useRawArgs()
-            .action(() => {
-                console.error(notYet("tf full_check"))
-                Deno.exit(2)
-            }),
-    )
+    .command("full_check", passthrough({
+        name: "full_check",
+        description: "Report every defect in the tf tree",
+        tool: "tf_check",
+        accepts: ["db", "mcap"],
+        argumentsLine: "<recording> [--json]",
+    }))
     .command(
         "rename",
         new Command()
