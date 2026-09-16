@@ -33,6 +33,7 @@ Checks, over the whole recording:
   starts late      an edge that only appears long after the file starts
   two answers      an edge published on a static and a dynamic stream, disagreeing
   published once   an edge published exactly once on a dynamic stream
+  unplaced         a stream whose header names a frame tf never publishes
 
 Exits 1 when anything is reported, 0 when the tree is clean.`)
         Deno.exit(0)
@@ -168,6 +169,58 @@ const note = (parent, child, stream, seconds, pose) => {
     edge.last = Math.max(edge.last, seconds)
 }
 
+// ---------------------------------------------------------------- header frames
+//
+// A frame that a message's own header names but tf never publishes is a real
+// defect -- nothing can place that data -- and it is invisible from tf alone.
+//
+// Only the leading `header.frame_id` is read, and only when what comes out looks
+// like a frame name. Message layouts past the header differ per type and are not
+// worth guessing at: a missed stream costs a check, a wrong guess costs trust.
+const FRAME_SHAPED = /^[A-Za-z0-9_./-]+$/
+
+const readCdrFrameId = (data) => {
+    // encapsulation(4) + stamp sec(4) + nanosec(4), then the string
+    if (data.byteLength < 16) {
+        return null
+    }
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+    const little = (view.getUint8(1) & 1) === 1
+    const length = view.getUint32(12, little)
+    if (length < 1 || length > 120 || 16 + length > data.byteLength) {
+        return null
+    }
+    const text = new TextDecoder().decode(new Uint8Array(data.buffer, data.byteOffset + 16, length - 1))
+    return FRAME_SHAPED.test(text) ? text : null
+}
+
+const readLcmFrameId = (data) => {
+    const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+    // fingerprint(8) + either seq+sec+nsec or sec+nsec, then the string
+    for (const at of [20, 16]) {
+        if (at + 4 > data.length) {
+            continue
+        }
+        const length = view.getInt32(at, false)
+        if (length < 1 || length > 120 || at + 4 + length > data.length) {
+            continue
+        }
+        const bytes = data.slice(at + 4, at + 4 + length)
+        let end = bytes.length
+        while (end > 0 && bytes[end - 1] === 0) {
+            end--
+        }
+        const text = new TextDecoder().decode(bytes.slice(0, end))
+        if (FRAME_SHAPED.test(text)) {
+            return text
+        }
+    }
+    return null
+}
+
+// stream name -> the frame its first message claims to be in
+const headerFrames = new Map()
+
 const MCAP_MAGIC = new Uint8Array([0x89, 0x4d, 0x43, 0x41, 0x50, 0x30, 0x0d, 0x0a])
 const head = new Uint8Array(16)
 const probe = Deno.openSync(path, { read: true })
@@ -228,6 +281,19 @@ if (isMcap) {
         }
     }
     tfChannels = onlyCanonical(tfChannels, (each) => each.name)
+    const tfTopics = new Set(tfChannels.map((each) => each.channel.topic))
+    for (const channel of reader.channelsById.values()) {
+        if (tfTopics.has(channel.topic) || channel.messageEncoding !== "cdr") {
+            continue
+        }
+        for await (const message of reader.readMessages({ topics: [channel.topic] })) {
+            const frame = readCdrFrameId(new Uint8Array(message.data))
+            if (frame !== null) {
+                headerFrames.set(channel.topic.replace(/^\//, ""), frame)
+            }
+            break // the first message is enough; a stream does not change frame
+        }
+    }
     for (const { channel, name, cdr } of tfChannels) {
         if (name.endsWith("_static")) {
             staticStreams.add(name)
@@ -273,6 +339,22 @@ if (isMcap) {
         }),
         (row) => row.name,
     )
+    const tfNames = new Set(tfRows.map((row) => row.name))
+    for (const row of streamRows) {
+        if (tfNames.has(row.name) || codecOf(row).startsWith("lz4")) {
+            continue
+        }
+        const first = db.prepare(
+            `SELECT b.data AS data FROM "${row.name}" AS s
+             JOIN "${row.name}_blob" AS b ON b.id = s.id LIMIT 1`,
+        ).get()
+        if (first) {
+            const frame = readLcmFrameId(first.data)
+            if (frame !== null) {
+                headerFrames.set(row.name, frame)
+            }
+        }
+    }
     for (const row of tfRows) {
         if (row.name.endsWith("_static")) {
             staticStreams.add(row.name)
@@ -343,6 +425,16 @@ for (const frame of frames) {
             break
         }
         seen.add(at)
+    }
+}
+
+for (const [stream, frame] of headerFrames) {
+    if (!frames.has(frame)) {
+        report(
+            "unplaced",
+            `"${stream}" says it is in frame "${frame}", which tf never publishes`,
+            { stream, frame },
+        )
     }
 }
 

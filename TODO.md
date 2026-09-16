@@ -75,13 +75,18 @@ one of the two, it says so and stops rather than half-working.
       recording, an edge published both statically and dynamically, and an edge published exactly
       once on a dynamic stream. Exits 1 when it finds anything. Only `tf` + `tf_static` by
       default; `--all-streams` folds in rival TFMessage streams too.
-    - [ ] still missing from it: a frame referenced by a message header but never published
+    - [x] a frame referenced by a message header but never published is reported as `unplaced`.
+          Only the leading `header.frame_id` is read, and only when what comes out looks like a
+          frame name: CDR is well defined, LCM's offset differs per type (Odometry decodes,
+          CameraInfo does not), and a wrong guess would cost more trust than a missed stream.
 - [x] `dtk data tf rename <recording> <old> <new>` — mcap via a new `mcap_edit --rename-tf-frame`,
       db via a new `db_tf_rename`. Both re-encode the tf message, because a name of a different
       length moves every field after it.
-    - [ ] tf only: a message whose own header names the old frame still names it. Rewriting that
-          needs the payload's type to re-align the fields after the string. Ask Jeff whether it
-          is worth decoding the known sensor/nav types to cover it.
+    - [~] tf only: a message whose own header names the old frame still names it. Rewriting it
+          needs the payload's type to re-align every field after the string, which is a per-type
+          decoder for every message in the file — out of proportion to the fix. Instead
+          `tf full_check` now REPORTS it (`unplaced`), and both rename tools say so when they
+          finish, so the problem is always visible even though it is not automatic.
 - [ ] `dtk data tf add <recording> <json>` — add an edge. Settle the json shape: parent, child,
       translation, rotation, static vs dynamic, and which topic it lands on.
 - [x] `dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]` — both formats,
