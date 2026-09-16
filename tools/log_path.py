@@ -27,18 +27,33 @@ def main() -> None:
     parser.add_argument("--all", action="store_true", help="list every log, newest first")
     arguments = parser.parse_args()
 
+    from dimos.constants import LOG_DIR
+
+    directory = Path(LOG_DIR)
+    current = None
+
     run_dir = os.environ.get("DIMOS_RUN_LOG_DIR")
     if run_dir:
         directory = Path(run_dir)
         current = directory / "main.jsonl"
     else:
-        from dimos.constants import LOG_DIR
+        # `dimos run` gives each run a directory of its own under LOG_DIR and
+        # writes main.jsonl there, so the newest *.jsonl sitting directly in
+        # LOG_DIR is usually an older, unrelated one.
+        try:
+            from dimos.core.run_registry import get_most_recent
 
-        directory = Path(LOG_DIR)
-        current = None
+            entry = get_most_recent(alive_only=False)
+            if entry is not None and entry.log_dir:
+                candidate = Path(entry.log_dir) / "main.jsonl"
+                if candidate.exists():
+                    current = candidate
+        except Exception:
+            pass  # no registry on this branch, or nothing has run
 
+    # rglob rather than glob: a run's log lives one level down
     logs = sorted(
-        (each for each in directory.glob("*.jsonl") if each.is_file()),
+        (each for each in directory.rglob("*.jsonl") if each.is_file()),
         key=lambda each: each.stat().st_mtime,
         reverse=True,
     ) if directory.is_dir() else []

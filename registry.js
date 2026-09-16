@@ -179,6 +179,13 @@ export const tools = [
         needsDimosModule: "dimos/memory2/store/sqlite.py",
     },
     {
+        name: "run_supervisor",
+        kind: "python",
+        description: "Run a blueprint through `dimos run`, filtered and watched",
+        entry: "tools/run_supervisor.py",
+        needsDimosModule: "dimos/robot/get_all_blueprints.py",
+    },
+    {
         name: "log_path",
         kind: "python",
         description: "Print where dimos is writing its jsonl log",
