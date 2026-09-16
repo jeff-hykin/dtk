@@ -72,7 +72,10 @@ const topic = new Command()
                     rest.length < 2
                         ? "dtk data topic rename: need <old> <new>"
                         : { tool: "mcap_edit", args: [recording, "--rename", `${rest[0]}=${rest[1]}`, ...rest.slice(2)] },
-                db: () => notYet("renaming a stream in a .db"),
+                db: (recording, rest) =>
+                    rest.length < 2
+                        ? "dtk data topic rename: need <old> <new>"
+                        : { tool: "db_rename", args: [recording, ...rest] },
             },
         }),
     )
@@ -144,15 +147,27 @@ const tf = new Command()
     }))
     .command(
         "rename",
-        new Command()
-            .name("rename")
-            .description("Rename one tf frame everywhere it appears")
-            .usage("<recording> <old> <new>")
-            .useRawArgs()
-            .action(() => {
-                console.error(notYet("tf rename"))
-                Deno.exit(2)
-            }),
+        perFormat({
+            name: "tf rename",
+            description: "Rename one tf frame, on either side of every edge it appears on",
+            usage: "<recording> <old> <new> [-y]",
+            byFormat: {
+                db: (recording, rest) =>
+                    rest.length < 2
+                        ? "dtk data tf rename: need <old> <new>"
+                        : {
+                            tool: "db_tf_rename",
+                            args: [recording, "--rename", `${rest[0]}=${rest[1]}`, ...rest.slice(2)],
+                        },
+                mcap: (recording, rest) =>
+                    rest.length < 2
+                        ? "dtk data tf rename: need <old> <new>"
+                        : {
+                            tool: "mcap_edit",
+                            args: [recording, "--rename-tf-frame", `${rest[0]}=${rest[1]}`, ...rest.slice(2)],
+                        },
+            },
+        }),
     )
     .command(
         "add",
@@ -172,10 +187,41 @@ const tf = new Command()
             .name("namespace")
             .description("Prefix every tf frame name")
             .usage("<recording> all --with <prefix> [--except a,b,c]")
-            .useRawArgs()
-            .action(() => {
-                console.error(notYet("tf namespace"))
-                Deno.exit(2)
+            // `all` is the only scope there is so far; it is spelled out so a
+            // later `--only` cannot silently change what a saved command does
+            .arguments("<recording:string> <scope:string>")
+            .option("--with <prefix:string>", "The prefix to add", { required: true })
+            .option("--except <frames:string>", "Comma-separated frames to leave alone")
+            .option("-y, --yes", "Skip the confirmation prompt")
+            .action(async (options, recording, scope) => {
+                if (scope !== "all") {
+                    console.error(`dtk data tf namespace: the only scope is \`all\`, not "${scope}"`)
+                    Deno.exit(2)
+                }
+                const format = requireFormat(recording, ["db", "mcap"], "tf namespace")
+                const exceptions = (options.except ?? "")
+                    .split(",")
+                    .map((each) => each.trim())
+                    .filter((each) => each.length > 0)
+                const plan = format === "db"
+                    ? {
+                        tool: "db_tf_rename",
+                        args: [
+                            recording,
+                            "--namespace", options.with,
+                            ...exceptions.flatMap((frame) => ["--except", frame]),
+                            ...(options.yes ? ["-y"] : []),
+                        ],
+                    }
+                    : {
+                        tool: "mcap_edit",
+                        args: [
+                            recording,
+                            "--namespace-tf", options.with,
+                            ...exceptions.flatMap((frame) => ["--except-tf-frame", frame]),
+                        ],
+                    }
+                Deno.exit(await runTool(toolsByName[plan.tool], plan.args))
             }),
     )
 

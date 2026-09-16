@@ -13,7 +13,9 @@ one of the two, it says so and stops rather than half-working.
 
 ### topics
 
-- [~] `dtk data topic rename <recording> <old> <new>` — mcap done, db not
+- [x] `dtk data topic rename <recording> <old> <new>` — mcap via `mcap_edit --rename`, db via
+      a new `db_rename` (ALTER TABLE on the stream's table family plus the `_streams` row, so it
+      costs the same whatever the recording weighs)
     - mcap: `mcap_edit --rename OLD=NEW` (in place, rewrites only the chunks that mention it)
     - db: nothing exists yet — new
 - [x] `dtk data topic delete <recording> <topic>`
@@ -32,12 +34,17 @@ one of the two, it says so and stops rather than half-working.
       once on a dynamic stream. Exits 1 when it finds anything. Only `tf` + `tf_static` by
       default; `--all-streams` folds in rival TFMessage streams too.
     - [ ] still missing from it: a frame referenced by a message header but never published
-- [ ] `dtk data tf rename <recording> <old> <new>` — rename a *frame*. `mcap_edit` can drop an edge
-      and correct a transform but cannot rename a frame, so this is new for both formats.
+- [x] `dtk data tf rename <recording> <old> <new>` — mcap via a new `mcap_edit --rename-tf-frame`,
+      db via a new `db_tf_rename`. Both re-encode the tf message, because a name of a different
+      length moves every field after it.
+    - [ ] tf only: a message whose own header names the old frame still names it. Rewriting that
+          needs the payload's type to re-align the fields after the string. Ask Jeff whether it
+          is worth decoding the known sensor/nav types to cover it.
 - [ ] `dtk data tf add <recording> <json>` — add an edge. Settle the json shape: parent, child,
       translation, rotation, static vs dynamic, and which topic it lands on.
-- [ ] `dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]` — prefix every frame
-      name, skipping the listed ones. New.
+- [x] `dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]` — both formats,
+      through the same rename path. Running it twice prefixes twice; nothing distinguishes an
+      already-prefixed name from one that starts that way.
 
 ### conversions
 

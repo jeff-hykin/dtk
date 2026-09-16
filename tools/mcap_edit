@@ -526,9 +526,22 @@ def drop_tf_edges(data, edges):
     the new summary -- does not move. The whole message is decoded and re-encoded
     rather than spliced, because CDR pads relative to the start of the body and
     removing one transform shifts the alignment of every later one."""
-    cursor = CdrCursor(data)
     kept = []
     removed = 0
+    for stamp, parent, child, pose in read_tf_message(data):
+        if (parent, child) in edges:
+            removed += 1
+        else:
+            kept.append((stamp, parent, child, pose))
+    if not removed:
+        return bytes(data), 0
+    return encode_tf_message(data[:4], kept), removed
+
+
+def read_tf_message(data):
+    """(stamp, parent, child, pose) for every transform in a tf2_msgs/TFMessage."""
+    cursor = CdrCursor(data)
+    transforms = []
     for _ in range(cursor.u32()):
         cursor.align(4)
         stamp = struct.unpack_from("<iI", cursor.data, cursor.at)
@@ -536,21 +549,22 @@ def drop_tf_edges(data, edges):
         parent = cursor.text()
         child = cursor.text()
         _, pose = cursor.doubles(7)
-        if (parent, child) in edges:
-            removed += 1
-        else:
-            kept.append((stamp, parent, child, pose))
-    if not removed:
-        return bytes(data), 0
+        transforms.append((stamp, parent, child, pose))
+    return transforms
 
-    out = bytearray(data[:4])   # the encapsulation header; offsets align past it
+
+def encode_tf_message(encapsulation, transforms):
+    """Rebuild a tf2_msgs/TFMessage. CDR pads relative to the start of the body,
+    so anything that changes a length has to re-encode from here rather than
+    splice: one shorter frame name shifts the alignment of every later field."""
+    out = bytearray(encapsulation)   # offsets align past the encapsulation header
 
     def align(width):
         while (len(out) - 4) % width:
             out.append(0)
 
-    out.extend(struct.pack("<I", len(kept)))
-    for (sec, nsec), parent, child, pose in kept:
+    out.extend(struct.pack("<I", len(transforms)))
+    for (sec, nsec), parent, child, pose in transforms:
         align(4)
         out.extend(struct.pack("<iI", sec, nsec))
         for text in (parent, child):
@@ -560,7 +574,35 @@ def drop_tf_edges(data, edges):
             out.extend(raw)
         align(8)
         out.extend(struct.pack("<7d", *pose))
-    return bytes(out), removed
+    return bytes(out)
+
+
+def renamed_frame(name, plan):
+    """One frame name under a rename plan: the explicit map first, then the
+    namespace prefix unless this frame was excepted from it. A frame named by
+    --rename-tf-frame is not also prefixed -- the new name is taken as final."""
+    if name in plan["map"]:
+        return plan["map"][name]
+    if plan["prefix"] and name not in plan["skip"]:
+        return plan["prefix"] + name
+    return name
+
+
+def rename_tf_frames(data, plan):
+    """Rename frames on a tf2_msgs/TFMessage. The message is re-encoded because
+    a name of a different length moves every field after it."""
+    transforms = read_tf_message(data)
+    renamed = []
+    changed = 0
+    for stamp, parent, child, pose in transforms:
+        new_parent = renamed_frame(parent, plan)
+        new_child = renamed_frame(child, plan)
+        if new_parent != parent or new_child != child:
+            changed += 1
+        renamed.append((stamp, new_parent, new_child, pose))
+    if not changed:
+        return bytes(data), 0
+    return encode_tf_message(data[:4], renamed), changed
 
 
 def repose_odometry(data, corrections):
@@ -594,7 +636,7 @@ def repose_odometry(data, corrections):
 # ---------------------------------------------------------------- the edit
 
 def rewrite_chunk(blob, renames, deleted_ids, tf_corrections=None, odom_corrections=None,
-                  tf_drops=None):
+                  tf_drops=None, tf_frame_renames=None):
     """Return the chunk's records with deleted channels and their messages gone
     and renamed channels renamed, plus the per-channel message index entries the
     new layout needs, plus how many tf edges were dropped. Offsets in a message
@@ -621,6 +663,9 @@ def rewrite_chunk(blob, renames, deleted_ids, tf_corrections=None, odom_correcti
                 payload, gone = drop_tf_edges(body[22:], tf_drops[channel_id])
                 body = body[:22] + payload
                 dropped += gone
+            if tf_frame_renames and channel_id in tf_frame_renames:
+                payload, _ = rename_tf_frames(body[22:], tf_frame_renames[channel_id])
+                body = body[:22] + payload
             if tf_corrections and channel_id in tf_corrections:
                 body = body[:22] + repose_tf_message(body[22:], tf_corrections[channel_id])
             elif odom_corrections and channel_id in odom_corrections:
@@ -707,6 +752,20 @@ def main():
                              "right, while an odom frame whose idea of up is wrong -- Point-LIO's "
                              "gravity-align settling on the wrong initial attitude -- is an error "
                              "on the parent and composes on the left")
+    parser.add_argument("--rename-tf-frame", action="append", default=[], metavar="OLD=NEW",
+                        help="rename a tf frame wherever it appears on a tf2_msgs/TFMessage, on "
+                             "either side of an edge (repeatable). This changes tf only: a topic "
+                             "whose own header names the old frame is listed as a warning rather "
+                             "than rewritten, because a frame name of a different length shifts "
+                             "the CDR alignment of every field after it and that cannot be "
+                             "re-encoded without knowing the message type")
+    parser.add_argument("--namespace-tf", metavar="PREFIX",
+                        help="prefix every tf frame name with this, except the ones named by "
+                             "--except-tf-frame. Running it twice prefixes twice; there is no way "
+                             "to tell an already-prefixed name from one that starts that way")
+    parser.add_argument("--except-tf-frame", action="append", default=[], metavar="FRAME",
+                        help="leave this frame alone when --namespace-tf prefixes the rest "
+                             "(repeatable)")
     parser.add_argument("--post-mul-odom", action="append", default=[],
                         metavar="TOPIC:X,Y,Z,QX,QY,QZ,QW",
                         help="right-multiply the pose on a nav_msgs/Odometry topic by the same "
@@ -756,16 +815,19 @@ def main():
             sys.exit("--cut-at needs --head, --tail, or both")
         if renames or deletes or arguments.post_mul_tf_edge or arguments.post_mul_odom \
                 or arguments.pre_mul_tf_edge or arguments.pre_mul_odom \
-                or arguments.drop_tf_edge or arguments.compact:
+                or arguments.drop_tf_edge or arguments.rename_tf_frame \
+                or arguments.namespace_tf or arguments.compact:
             sys.exit("--cut-at writes new files; run it on its own, then edit the pieces")
         mcap = Mcap(arguments.recording)
         split(mcap, arguments.recording, arguments.cut_at, arguments.head, arguments.tail)
         return
     if not (renames or deletes or arguments.post_mul_tf_edge or arguments.post_mul_odom
             or arguments.pre_mul_tf_edge or arguments.pre_mul_odom
-            or arguments.drop_tf_edge or arguments.compact):
-        sys.exit("nothing to do: pass --rename, --delete, --drop-tf-edge, --post-mul-tf-edge, "
-                 "--pre-mul-tf-edge, --post-mul-odom, --pre-mul-odom, --compact or --cut-at")
+            or arguments.drop_tf_edge or arguments.rename_tf_frame or arguments.namespace_tf
+            or arguments.compact):
+        sys.exit("nothing to do: pass --rename, --delete, --drop-tf-edge, --rename-tf-frame, "
+                 "--namespace-tf, --post-mul-tf-edge, --pre-mul-tf-edge, --post-mul-odom, "
+                 "--pre-mul-odom, --compact or --cut-at")
     if renames.keys() & deletes:
         sys.exit("a topic cannot be both renamed and deleted")
 
@@ -794,6 +856,24 @@ def main():
         for channel in mcap.channels.values():
             if mcap.schemas.get(channel.schema_id) == "tf2_msgs/msg/TFMessage":
                 tf_drops.setdefault(channel.id, set()).add((parent, child))
+    # Renaming a frame is keyed like a drop: the frame is renamed wherever it is
+    # published, on either side of an edge, on every TFMessage topic there is.
+    frame_map = {}
+    for pair in arguments.rename_tf_frame:
+        if "=" not in pair:
+            sys.exit(f"--rename-tf-frame wants OLD=NEW, got {pair!r}")
+        old_frame, new_frame = pair.split("=", 1)
+        frame_map[old_frame] = new_frame
+    tf_frame_renames = {}
+    if frame_map or arguments.namespace_tf:
+        plan = {"map": frame_map, "prefix": arguments.namespace_tf,
+                "skip": set(arguments.except_tf_frame)}
+        for channel in mcap.channels.values():
+            if mcap.schemas.get(channel.schema_id) == "tf2_msgs/msg/TFMessage":
+                tf_frame_renames[channel.id] = plan
+        if not tf_frame_renames:
+            sys.exit("no tf2_msgs/msg/TFMessage topic in this file")
+
     odom_corrections = {}
     for side, texts in (("post", arguments.post_mul_odom), ("pre", arguments.pre_mul_odom)):
         for text in texts:
@@ -805,7 +885,8 @@ def main():
 
     if arguments.compact and not (renames or deletes or arguments.post_mul_tf_edge
                                   or arguments.post_mul_odom or arguments.pre_mul_tf_edge
-                                  or arguments.pre_mul_odom or arguments.drop_tf_edge):
+                                  or arguments.pre_mul_odom or arguments.drop_tf_edge
+                                  or arguments.rename_tf_frame or arguments.namespace_tf):
         print(f"{arguments.recording.name}: {mcap.size:,} bytes, {len(mcap.chunk_indexes)} chunks, "
               f"{len(mcap.channels)} channels")
         free = free_regions(mcap)
@@ -821,7 +902,7 @@ def main():
         return
 
     deleted_ids, touched = plan_edit(mcap, renames, deletes)
-    reposed = set(tf_corrections) | set(odom_corrections) | set(tf_drops)
+    reposed = set(tf_corrections) | set(odom_corrections) | set(tf_drops) | set(tf_frame_renames)
     if reposed:
         touched = sorted(set(touched) | {
             position for position, index in enumerate(mcap.chunk_indexes)
@@ -837,6 +918,11 @@ def main():
         print(f"  delete {topic} ({count:,} messages)")
     for text in arguments.drop_tf_edge:
         print(f"  drop tf edge {text}")
+    for old_frame, new_frame in frame_map.items():
+        print(f"  rename tf frame {old_frame} -> {new_frame}")
+    if arguments.namespace_tf:
+        skipped = ", ".join(sorted(arguments.except_tf_frame)) or "nothing"
+        print(f"  prefix every tf frame with {arguments.namespace_tf!r}, except {skipped}")
     for text in arguments.post_mul_tf_edge:
         print(f"  move tf edge {text.rsplit(':', 1)[0]} (right)")
     for text in arguments.pre_mul_tf_edge:
@@ -864,7 +950,8 @@ def main():
         index = mcap.chunk_indexes[position]
         start, end, compression, blob = mcap.read_chunk(index)
         records, entries, gone = rewrite_chunk(
-            blob, renames, deleted_ids, tf_corrections, odom_corrections, tf_drops)
+            blob, renames, deleted_ids, tf_corrections, odom_corrections, tf_drops,
+            tf_frame_renames)
         dropped_edges += gone
         if not entries:
             # Every message in this chunk belonged to a deleted topic. Keeping the
@@ -927,6 +1014,9 @@ def main():
         # plainly: the file is unchanged and the name was probably a typo.
         print(f"dropped {dropped_edges:,} transform(s) naming "
               f"{', '.join(arguments.drop_tf_edge)}")
+    if tf_frame_renames:
+        print("note: only tf was renamed. A message whose own header names an old frame still "
+              "names it, so check the tree afterwards")
     print(f"rewrote {len(touched)} chunk(s), {rewritten_bytes:,} bytes; "
           f"{'reclaimed {:,} bytes'.format(reclaimed) if arguments.reclaim else 'old chunks blanked (pass --reclaim to free the space)'}; "
           f"{time.monotonic() - started:.0f}s")
