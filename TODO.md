@@ -18,7 +18,10 @@ Add to this freely. Checked = done and verified.
       compared against a HEAD of the release asset, so it says "already current" instead of
       re-downloading; `--force` still downloads regardless. It also works for a binary while dtk
       runs from a checkout, which it did not before.
-- [ ] `dtk run <args>` — a wrapper around `dimos run` built for an agent to read:
+- [~] `dtk run <args>` — a wrapper around `dimos run` built for an agent to read. 1-6 done and
+      verified on CudaLaptop against `coordinator-mock`; 7 and 8 are written but could not be
+      exercised, because that dimos branch has no `make_transport` for them to subscribe through
+      (they say so and the run continues):
     1. behaves like `dimos run`
     2. prints the absolute path of the full jsonl log
     3. always enables dtop
@@ -35,6 +38,7 @@ Add to this freely. Checked = done and verified.
        One warning per KIND of breakage (multiple parents, multiple trees) but it keeps watching
     8. every 60 s prints the Hz of topics above 0.5 Hz, and which modules are using a lot of CPU
        or memory
+    - [ ] 7 and 8 need verifying on a dimos branch that has `make_transport`
 
 ## `dtk data <verb>` — one namespace for recordings
 

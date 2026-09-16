@@ -232,12 +232,36 @@ class Filter:
 # ------------------------------------------------------------------ watching
 
 
+# `make_transport` has lived in more than one module across branches, so it is
+# looked up rather than imported from one place: watching the tree is a nicety
+# and must never be the reason a run does not start.
+def find_make_transport():
+    import importlib
+
+    for module_name in (
+        "dimos.core.transport_factory",
+        "dimos.core.transport",
+        "dimos.protocol.transport_factory",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except Exception:
+            continue
+        found = getattr(module, "make_transport", None)
+        if found is not None:
+            return found
+    return None
+
+
 def watch_tf(stop: threading.Event) -> None:
     """After a grace period, complain once per KIND of broken tree and keep
     watching: a tree that heals and breaks again is worth knowing about, a tree
     that stays broken is not worth repeating."""
+    make_transport = find_make_transport()
+    if make_transport is None:
+        say("[tf] not watching the tree: no make_transport on this dimos")
+        return
     try:
-        from dimos.core.transport_factory import make_transport
         from dimos.msgs.tf2_msgs.TFMessage import TFMessage
     except Exception as error:
         say(f"[tf] not watching the tree: {error}")
@@ -289,10 +313,9 @@ def watch_tf(stop: threading.Event) -> None:
 def watch_stats(stop: threading.Event, topics: dict) -> None:
     """Per-module CPU and memory from the stats dtop already publishes, and the
     rate of every wired topic that is actually moving."""
-    try:
-        from dimos.core.transport_factory import make_transport
-    except Exception as error:
-        say(f"[stats] not watching: {error}")
+    make_transport = find_make_transport()
+    if make_transport is None:
+        say("[stats] not watching: no make_transport on this dimos")
         return
 
     latest = {"stats": None}
