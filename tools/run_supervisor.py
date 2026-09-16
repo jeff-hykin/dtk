@@ -76,21 +76,39 @@ def load_blueprint(names: list[str]):
     return autoconnect(*map(get_by_name_or_exit, blueprint_names))
 
 
+def atom_name(atom) -> str:
+    """What a blueprint calls this module instance. `.name` is a property on
+    newer branches and absent on older ones, so it is reconstructed the same way
+    the property does."""
+    name = getattr(atom, "name", None)
+    if isinstance(name, str):
+        return name
+    instance = getattr(atom, "instance_name", None)
+    if isinstance(instance, str):
+        return instance
+    module = getattr(atom, "module", None)
+    return getattr(module, "name", None) or getattr(module, "__name__", "?")
+
+
 def wiring(blueprint):
     """(topic, direction) -> the module instances on it, after remapping."""
     produced = defaultdict(list)
     consumed = defaultdict(list)
     types = {}
-    for atom in blueprint.active_blueprints:
-        for stream in atom.streams:
-            topic = blueprint.remapping_map.get((atom.name, stream.name), stream.name)
+    # Both of these moved between branches, so neither is assumed.
+    atoms = getattr(blueprint, "active_blueprints", None) or getattr(blueprint, "blueprints", ())
+    remapping = getattr(blueprint, "remapping_map", {}) or {}
+    for atom in atoms:
+        name = atom_name(atom)
+        for stream in getattr(atom, "streams", ()):
+            topic = remapping.get((name, stream.name), stream.name)
             if not isinstance(topic, str):
                 continue
             types[topic] = stream.type
             if stream.direction in ("out", "inout"):
-                produced[topic].append(atom.name)
+                produced[topic].append(name)
             if stream.direction in ("in", "inout"):
-                consumed[topic].append(atom.name)
+                consumed[topic].append(name)
     return produced, consumed, types
 
 
