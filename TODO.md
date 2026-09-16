@@ -8,18 +8,18 @@ Every verb takes a recording and works out for itself whether it is a memory2 `.
 `.mcap` (sqlite header vs `MCAP0` magic, not the extension). Where a verb only makes sense for
 one of the two, it says so and stops rather than half-working.
 
-- [ ] `dtk data <verb>` command group, with format sniffing and a shared "wrong format" warning
-- [ ] `dtk data summary <db|mcap>` — wire up `db_summary` (already handles both)
+- [x] `dtk data <verb>` command group, with format sniffing and a shared "wrong format" warning
+- [x] `dtk data summary <db|mcap>` — wire up `db_summary` (already handles both)
 
 ### topics
 
-- [ ] `dtk data topic rename <recording> <old> <new>`
+- [~] `dtk data topic rename <recording> <old> <new>` — mcap done, db not
     - mcap: `mcap_edit --rename OLD=NEW` (in place, rewrites only the chunks that mention it)
     - db: nothing exists yet — new
-- [ ] `dtk data topic delete <recording> <topic>`
+- [x] `dtk data topic delete <recording> <topic>`
     - mcap: `mcap_edit --delete TOPIC`
     - db: `db_delete <db> <stream>`
-- [ ] `dtk data topic copy --from A --to B --topic NAME`
+- [~] `dtk data topic copy --from A --to B --topic NAME` — db done, mcap not
     - db: `db_cp --from --to --stream`
     - mcap: nothing exists yet — new, and harder (chunks)
 
@@ -38,31 +38,32 @@ one of the two, it says so and stops rather than half-working.
 
 ### conversions
 
-- [ ] `dtk data to_mcap <db>` — `db_to_mcap`; warn and stop if handed an mcap
-- [ ] `dtk data to_db <mcap>` — `mcap_to_db`; warn and stop if handed a db
-- [ ] `dtk data to_video <db> <stream>` — `to_video`
-- [ ] `dtk data lcm_to_cdr <mcap>` — `mcap_lcm_to_cdr`; mcap only for now, warn on a db
-- [ ] `dtk data heatmap <recording>` — `heatmap` (already handles both)
-- [ ] `dtk data to_rrd <recording>`
+- [x] `dtk data to_mcap <db>` — `db_to_mcap`; warn and stop if handed an mcap
+- [x] `dtk data to_db <mcap>` — `mcap_to_db`; warn and stop if handed a db
+- [x] `dtk data to_video <db> <stream>` — `to_video`
+- [x] `dtk data lcm_to_cdr <mcap>` — `mcap_lcm_to_cdr`; mcap only for now, warn on a db
+- [x] `dtk data heatmap <recording>` — `heatmap` (already handles both)
+- [x] `dtk data to_rrd <recording>`
     - `db_to_rrd` for the conversion
     - cache the result under the dtk cache keyed on the input, so re-running reuses it
     - open it at the end with a globally installed `rerun`
     - if there is no global `rerun`, offer to install one rather than failing
 
-## Tools not yet registered in dtk
+## Tools registered in dtk
 
-Needed by the above: `db_cp`, `db_delete`, `db_tree`, `db_to_rrd`, `mcap_edit`, `mcap_check`,
-`mcap_lcm_to_cdr`.
+All of the above are registered: `db_cp`, `db_delete`, `db_tree`, `db_to_rrd`, `mcap_edit`,
+`mcap_check`, `mcap_lcm_to_cdr`, on top of the original nine.
 
 Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_thin`,
 `replay_map`, `dimos_graph`, `memworld`, `mcap_depth_viewable`.
 
 ## Known rough edges
 
-- [ ] `db_to_mcap` probes `~/repos/dimos` first, and that clone has no `memory2`, so it needs
+- [x] `db_to_mcap` probes `~/repos/dimos` first, and that clone has no `memory2`, so it needs
       `DIMOS_REPO` set by hand. Probe for the module, not just the directory.
-- [ ] `mcap_lcm_to_cdr`, `mcap_depth_viewable` and `replay_map` hardcode `/Users/jeffhykin/repos/dimos`
-      in their shebang, so they only run on this machine.
+- [x] `mcap_lcm_to_cdr` hardcoded `/Users/jeffhykin/repos/dimos` in its shebang; dtk's copy probes
+      for the module instead. `mcap_depth_viewable` and `replay_map` still do, and are not
+      registered yet.
 - [ ] `heatmap` dies on a recording whose `PointCloud2` fingerprint predates `@dimos/msgs@0.1.4`
       (e.g. `spot_small_loop.db`). Same failure from `~/Commands/heatmap`, so it is the tool.
 - [ ] Linux `icp_stitch` needs glibc 2.34, so an Ubuntu 20.04 / L4T 35 target is out.

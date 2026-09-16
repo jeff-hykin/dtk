@@ -9,12 +9,14 @@ import { Database } from "jsr:@db/sqlite@0.12"
 // --- CLI ---
 const args = [...Deno.args]
 let dbPath = null, outPath = null, cameraHz = 2.0, voxelSize = 0.05, axisLength = 0.3
+let openWhenDone = true
 
 for (let i = 0; i < args.length; i++) {
     if (args[i] === "-o" || args[i] === "--out") { outPath = args[++i] }
     else if (args[i] === "--camera-hz") { cameraHz = parseFloat(args[++i]) }
     else if (args[i] === "--voxel") { voxelSize = parseFloat(args[++i]) }
     else if (args[i] === "--axis") { axisLength = parseFloat(args[++i]) }
+    else if (args[i] === "--no-open") { openWhenDone = false }
     else if (args[i] === "-h" || args[i] === "--help") {
         console.log(`db_to_rrd — Convert a dimos memory2 .db recording to a rerun .rrd file
 
@@ -24,7 +26,8 @@ Options:
   -o, --out         Output .rrd path (default: <input>.rrd)
   --camera-hz N     Throttle images to N Hz (default: 2.0, 0 = all)
   --voxel N         Point size hint (default: 0.05)
-  --axis N          XYZ axis-arrow length (meters) on every transform frame (default: 0.3, 0 = off)`)
+  --axis N          XYZ axis-arrow length (meters) on every transform frame (default: 0.3, 0 = off)
+  --no-open         Write the file and stop, instead of launching rerun`)
         Deno.exit(0)
     }
     else if (!dbPath) { dbPath = args[i] }
@@ -657,10 +660,12 @@ await Deno.writeFile(outPath, output)
 const sizeMB = (totalSize / 1024 / 1024).toFixed(1)
 console.log(`Done: ${totalChunks} chunks, ${sizeMB} MiB → ${outPath}`)
 
-console.log(`Opening with rerun...`)
-try {
-    const child = new Deno.Command("rerun", { args: [outPath], stdin: "null", stdout: "inherit", stderr: "inherit" }).spawn()
-    child.unref()
-} catch (err) {
-    console.error(`Could not launch rerun (${err.message}). Open manually with: rerun ${outPath}`)
+if (openWhenDone) {
+    console.log(`Opening with rerun...`)
+    try {
+        const child = new Deno.Command("rerun", { args: [outPath], stdin: "null", stdout: "inherit", stderr: "inherit" }).spawn()
+        child.unref()
+    } catch (err) {
+        console.error(`Could not launch rerun (${err.message}). Open manually with: rerun ${outPath}`)
+    }
 }

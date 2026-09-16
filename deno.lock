@@ -7,6 +7,7 @@
     "jsr:@cliffy/table@1.0.0-rc.7": "1.0.0-rc.7",
     "jsr:@db/sqlite@0.12": "0.12.0",
     "jsr:@denosaurs/plug@1": "1.1.0",
+    "jsr:@dimos/msgs@*": "0.1.4",
     "jsr:@std/assert@0.217": "0.217.0",
     "jsr:@std/encoding@1": "1.0.10",
     "jsr:@std/fmt@1": "1.0.10",
@@ -60,6 +61,9 @@
         "jsr:@std/path@1"
       ]
     },
+    "@dimos/msgs@0.1.4": {
+      "integrity": "564bc30b4bc41a562c296c257a15055283ca0cbd66d0627991ede5295832d0c4"
+    },
     "@std/assert@0.217.0": {
       "integrity": "c98e279362ca6982d5285c3b89517b757c1e3477ee9f14eb2fdf80a45aaa9642"
     },
@@ -99,7 +103,9 @@
     "https://esm.sh/@foxglove/crc@^0.0.3?target=denonext": "https://esm.sh/@foxglove/crc@0.0.3?target=denonext",
     "https://esm.sh/@jsr/std__fmt@^1.0.10/colors?target=denonext": "https://esm.sh/jsr/@std/fmt@1.0.10/colors?target=denonext",
     "https://esm.sh/@jsr/std__text@^1.0.19/closest-string?target=denonext": "https://esm.sh/jsr/@std/text@1.0.19/closest-string?target=denonext",
-    "https://esm.sh/heap-js@^2.2.0?target=denonext": "https://esm.sh/heap-js@2.7.1?target=denonext"
+    "https://esm.sh/flatbuffers@^24.3.25?target=denonext": "https://esm.sh/flatbuffers@24.12.23?target=denonext",
+    "https://esm.sh/heap-js@^2.2.0?target=denonext": "https://esm.sh/heap-js@2.7.1?target=denonext",
+    "https://esm.sh/tslib@^2.6.2?target=denonext": "https://esm.sh/tslib@2.8.1?target=denonext"
   },
   "remote": {
     "https://esm.sh/@foxglove/crc@0.0.3/denonext/crc.mjs": "9dd583a7f622853fa3dabaea2b51760447d65e9419692fa502d67b17146475b8",
@@ -150,6 +156,10 @@
     "https://esm.sh/@jsr/std__text@1.0.19/denonext/levenshtein-distance.mjs": "a4650ad6d704982c3bb54da09c86eaead1c8747783fc2ce4b1fd6129dc75988d",
     "https://esm.sh/@mcap/core@2.1.7": "1a9c73924c903e1f9e0148a91dddd898a8fb1448e768e70a2a58b2c61b69cd40",
     "https://esm.sh/@mcap/core@2.1.7/denonext/core.mjs": "ec86882da8585bf385163869e99abaa301308dc6febfad8ec37835ac2e4110f0",
+    "https://esm.sh/apache-arrow@18.1.0": "7a07eb7986fdb750620df74d1c0245fcca8bbf401d016fefe8b5a989438154e8",
+    "https://esm.sh/apache-arrow@18.1.0/denonext/apache-arrow.mjs": "ecf81683f4400654efdd3d44590467c972f56b0d348612e41381b7d6f17d9547",
+    "https://esm.sh/flatbuffers@24.12.23/denonext/flatbuffers.mjs": "6baa4b6e8d60d4c7a241436dae6b6d2b511fb81df34a130bd58e5b806be7f11e",
+    "https://esm.sh/flatbuffers@24.12.23?target=denonext": "e17a54cf880702e537e72e81a5ade221a678341677c165ae09f8fef5174f24af",
     "https://esm.sh/fzstd@0.1.1": "01890b1eddce58319a429de2469ec40a8888981525a9d60a0a4111d5c45a6f1d",
     "https://esm.sh/fzstd@0.1.1/denonext/fzstd.mjs": "6f50ed2b4b074353034a0e6436bd3b31ad739d734b4d5e6ad4b9f7877f12ab0c",
     "https://esm.sh/heap-js@2.7.1/denonext/heap-js.mjs": "c958c3be2390f4e1fead03440aa865b22950f644ac34a026a0d56e70261e5aaa",
@@ -162,6 +172,8 @@
     "https://esm.sh/jsr/@std/fmt@1.0.10/colors?target=denonext": "14ab68c556901a7cc1dfaab25c08be40e7c144827ed06f4160a00b9b55d9fdab",
     "https://esm.sh/jsr/@std/text@1.0.19/closest-string?target=denonext": "36026ea1b45c038aae92586c0aab2bf760cb62af6af946345d8a014f939659f7",
     "https://esm.sh/lz4js@0.2.0": "90670ea0386ea11dce46ab49576c60e262bcaab092891e8b0f0e77efceea6602",
-    "https://esm.sh/lz4js@0.2.0/denonext/lz4js.mjs": "017f730e959055807c8ba9933a91a8d316fbb0fa940d197646a900722fe699d6"
+    "https://esm.sh/lz4js@0.2.0/denonext/lz4js.mjs": "017f730e959055807c8ba9933a91a8d316fbb0fa940d197646a900722fe699d6",
+    "https://esm.sh/tslib@2.8.1/denonext/tslib.mjs": "c38da5dd6da6281964435002ce204cd586634fe3bdfb24a0ee116f48cf3292e9",
+    "https://esm.sh/tslib@2.8.1?target=denonext": "a89cbf082a0ad54e87ea85d75e6d5492b3e2ff0c5de9e3e478206a015b3f3992"
   }
 }

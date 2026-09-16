@@ -5,7 +5,8 @@
 import { Command } from "jsr:@cliffy/command@1.0.0-rc.7"
 import { toolsByName } from "../registry.js"
 import { runTool } from "../tool_store.js"
-import { detectFormat, requireFormat } from "../recordings.js"
+import { requireFormat } from "../recordings.js"
+import { toRrd } from "../rrd.js"
 
 const wantsHelp = (args) => args.includes("-h") || args.includes("--help")
 
@@ -236,5 +237,36 @@ export default new Command()
         tool: "mcap_check",
         accepts: ["mcap"],
     }))
+    .command(
+        "to_rrd",
+        new Command()
+            .name("to_rrd")
+            .description("Convert to a rerun .rrd, keep it, and open it")
+            .usage("<recording.db> [options]")
+            .arguments("<recording:string>")
+            .option("--no-open", "Just convert; do not launch rerun")
+            .option("--force", "Convert again even if the cached .rrd is still good")
+            .option("--camera-hz <hz:number>", "Throttle images to N Hz (0 = all)")
+            .option("--voxel <size:number>", "Point size hint")
+            .option("--axis <meters:number>", "Axis-arrow length on every transform frame (0 = off)")
+            .action(async (options, recording) => {
+                requireFormat(recording, ["db"], "to_rrd")
+                const conversion = []
+                if (options.cameraHz !== undefined) {
+                    conversion.push("--camera-hz", String(options.cameraHz))
+                }
+                if (options.voxel !== undefined) {
+                    conversion.push("--voxel", String(options.voxel))
+                }
+                if (options.axis !== undefined) {
+                    conversion.push("--axis", String(options.axis))
+                }
+                Deno.exit(await toRrd(recording, {
+                    force: options.force === true,
+                    open: options.open !== false,
+                    conversion,
+                }))
+            }),
+    )
     .command("topic", topic)
     .command("tf", tf)
