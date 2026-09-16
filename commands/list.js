@@ -9,6 +9,14 @@ export default new Command()
         const width = Math.max(...tools.map((each) => each.name.length))
         for (const tool of tools) {
             const state = runningFromSource ? "source" : (isDownloaded(tool) ? "ready" : "-")
-            console.log(`${tool.name.padEnd(width)}  ${state.padEnd(6)}  ${tool.description}`)
+            try {
+                console.log(`${tool.name.padEnd(width)}  ${state.padEnd(6)}  ${tool.description}`)
+            } catch (error) {
+                // `dtk list | head` closes the pipe on us; that is not an error
+                if (error instanceof Deno.errors.BrokenPipe) {
+                    return
+                }
+                throw error
+            }
         }
     })

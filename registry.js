@@ -46,7 +46,7 @@ export const tools = [
         name: "db_to_mcap",
         kind: "sh",
         description: "Convert a memory2 .db recording into a ROS 2 .mcap (needs a dimos checkout and uv)",
-        entry: "tools/db_to_mcap.sh",
+        entry: "tools/db_to_mcap",
     },
     {
         name: "mcap_to_db",
