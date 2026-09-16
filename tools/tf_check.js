@@ -31,7 +31,7 @@ Checks, over the whole recording:
   forest           more than one root, so some frames cannot reach the others
   stops early      an edge that stops being published long before the file ends
   starts late      an edge that only appears long after the file starts
-  static and not   an edge published on both a _static stream and a dynamic one
+  two answers      an edge published on a static and a dynamic stream, disagreeing
   published once   an edge published exactly once on a dynamic stream
 
 Exits 1 when anything is reported, 0 when the tree is clean.`)
@@ -79,11 +79,15 @@ const decodeLcmFrames = (data) => {
         }
         const parent = readString()
         const child = readString()
+        const pose = []
+        for (let at = 0; at < 7; at++) {
+            pose.push(view.getFloat64(offset + at * 8, false))
+        }
         offset += TRANSFORM_POSE_BYTES
         if (offset > data.length) {
             break
         }
-        edges.push({ parent, child })
+        edges.push({ parent, child, pose })
     }
     return edges
 }
@@ -116,11 +120,15 @@ const decodeCdrFrames = (data) => {
         const parent = string()
         const child = string()
         align(8)
+        const pose = []
+        for (let index = 0; index < 7; index++) {
+            pose.push(view.getFloat64(at + index * 8, little))
+        }
         at += TRANSFORM_POSE_BYTES
         if (at > data.byteLength) {
             break
         }
-        edges.push({ parent, child })
+        edges.push({ parent, child, pose })
     }
     return edges
 }
@@ -132,12 +140,27 @@ const edges = new Map()
 let recordingStart = Infinity
 let recordingEnd = -Infinity
 
-const note = (parent, child, stream, seconds) => {
+// Rounded, because the same transform written by two publishers differs in the
+// last bits and that is not what this is looking for.
+const poseKey = (pose) => pose.map((value) => value.toFixed(6)).join(",")
+
+const note = (parent, child, stream, seconds, pose) => {
     const key = `${parent} -> ${child}`
     let edge = edges.get(key)
     if (edge === undefined) {
-        edge = { parent, child, streams: new Set(), count: 0, first: Infinity, last: -Infinity }
+        edge = {
+            parent,
+            child,
+            streams: new Set(),
+            poses: new Map(),
+            count: 0,
+            first: Infinity,
+            last: -Infinity,
+        }
         edges.set(key, edge)
+    }
+    if (pose !== undefined) {
+        edge.poses.set(stream, poseKey(pose))
     }
     edge.streams.add(stream)
     edge.count++
@@ -212,8 +235,8 @@ if (isMcap) {
         const decode = cdr ? decodeCdrFrames : decodeLcmFrames
         for await (const message of reader.readMessages({ topics: [channel.topic] })) {
             const seconds = Number(message.logTime) / 1e9
-            for (const { parent, child } of decode(new Uint8Array(message.data))) {
-                note(parent, child, name, seconds)
+            for (const { parent, child, pose } of decode(new Uint8Array(message.data))) {
+                note(parent, child, name, seconds, pose)
             }
         }
     }
@@ -249,8 +272,8 @@ if (isMcap) {
              JOIN "${row.name}_blob" AS b ON b.id = s.id ORDER BY s.ts`,
         ).all()
         for (const message of messages) {
-            for (const { parent, child } of decodeLcmFrames(message.data)) {
-                note(parent, child, row.name, message.ts)
+            for (const { parent, child, pose } of decodeLcmFrames(message.data)) {
+                note(parent, child, row.name, message.ts, pose)
             }
         }
     }
@@ -320,11 +343,18 @@ for (const [name, edge] of edges) {
     const onlyStatic = [...edge.streams].every((stream) => staticStreams.has(stream))
     const anyStatic = [...edge.streams].some((stream) => staticStreams.has(stream))
     if (anyStatic && !onlyStatic) {
-        report(
-            "static and not",
-            `${name} is published on both a static and a dynamic stream: ${[...edge.streams].join(", ")}`,
-            { edge: name },
-        )
+        // Publishing a static edge dynamically as well is deliberate here: dimos
+        // does not read tf_static yet, so `dtk data tf add` republishes it on tf.
+        // What is worth reporting is the two streams DISAGREEING, which is the
+        // case a consumer's tf tree slerps between.
+        const answers = new Set(edge.poses.values())
+        if (answers.size > 1) {
+            report(
+                "two answers",
+                `${name} is published on ${[...edge.streams].join(" and ")} with different transforms`,
+                { edge: name },
+            )
+        }
         continue
     }
     if (onlyStatic) {

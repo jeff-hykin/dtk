@@ -54,6 +54,14 @@ export const tools = [
         permissions: denoRecordingPermissions,
     },
     {
+        name: "db_tf_add",
+        kind: "deno",
+        description: "Add tf edges to a memory2 .db, in place",
+        entry: "tools/db_tf_add.js",
+        formats: ["db"],
+        permissions: denoRecordingPermissions,
+    },
+    {
         name: "db_cp",
         kind: "deno",
         description: "Copy one stream from one memory2 .db into another",

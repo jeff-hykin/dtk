@@ -103,10 +103,15 @@ async function ensureScript(tool, { force }) {
 
 async function ensureBinary(tool, { force }) {
     const destination = binaryPathOf(tool)
+    const target = Deno.build.target
     if (!force && isDownloaded(tool)) {
+        // Asked again even though the binary is here: the first attempt can have
+        // downloaded the binary and then failed to import its closure, and
+        // running it in that state fails with a bare "no such file" from the
+        // kernel looking for an interpreter that is not there.
+        await ensureNixClosure(tool, target)
         return destination
     }
-    const target = Deno.build.target
     const assetName = tool.assets[target]
     if (!assetName) {
         throw new Error(

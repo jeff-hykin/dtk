@@ -179,15 +179,24 @@ const tf = new Command()
     )
     .command(
         "add",
-        new Command()
-            .name("add")
-            .description("Add a tf edge")
-            .usage("<recording> <json>")
-            .useRawArgs()
-            .action(() => {
-                console.error(notYet("tf add"))
-                Deno.exit(2)
-            }),
+        perFormat({
+            name: "tf add",
+            description: "Add tf edges, given as json: {parent, child, translation, rotation, static}",
+            usage: "<recording> '<json>' [-y]",
+            byFormat: {
+                db: (recording, rest) =>
+                    rest.length < 1
+                        ? "dtk data tf add: need the json"
+                        : { tool: "db_tf_add", args: [recording, ...rest] },
+                mcap: (recording, rest) =>
+                    rest.length < 1
+                        ? "dtk data tf add: need the json"
+                        : {
+                            tool: "mcap_edit",
+                            args: [recording, "--add-tf", rest[0], ...rest.slice(1)],
+                        },
+            },
+        }),
     )
     .command(
         "namespace",

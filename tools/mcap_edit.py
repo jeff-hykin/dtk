@@ -26,6 +26,7 @@ refuses to leave a file whose summary disagrees with its data.
 """
 
 import argparse
+import json
 import fcntl
 import os
 import struct
@@ -577,6 +578,58 @@ def encode_tf_message(encapsulation, transforms):
     return bytes(out)
 
 
+STATIC_REPUBLISH_NS = 450_000_000
+
+
+def add_tf_edges(data, log_time, plan, state):
+    """Append edges to a tf2_msgs/TFMessage.
+
+    A dynamic edge goes on every message, so it arrives at whatever rate the
+    recording already publishes tf at rather than at one this invented. A static
+    edge rides along about every 0.45 s, because dimos does not read tf_static
+    yet and something has to keep it alive on /tf."""
+    adding = list(plan["dynamic"])
+    if plan["static"] and (log_time - state["last_static"]) >= STATIC_REPUBLISH_NS:
+        adding.extend(plan["static"])
+        state["last_static"] = log_time
+    if not adding:
+        return bytes(data), 0
+    stamp = (log_time // 1_000_000_000, log_time % 1_000_000_000)
+    transforms = read_tf_message(data)
+    for edge in adding:
+        transforms.append((stamp, edge["parent"], edge["child"], edge["pose"]))
+    return encode_tf_message(data[:4], transforms), len(adding)
+
+
+def tf_edges_from_json(text):
+    """The json `dtk data tf add` passes through: one edge or a list of them."""
+    parsed = json.loads(text)
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    edges = []
+    for each in parsed:
+        if not each.get("parent") or not each.get("child"):
+            sys.exit("every tf edge needs a parent and a child")
+
+        def triple(value, fallback):
+            if value is None:
+                return list(fallback)
+            if isinstance(value, dict):
+                keys = ("x", "y", "z", "w")[:len(fallback)]
+                return [float(value.get(key, fallback[at])) for at, key in enumerate(keys)]
+            return [float(value[at]) if at < len(value) else fallback[at]
+                    for at in range(len(fallback))]
+
+        edges.append({
+            "parent": str(each["parent"]),
+            "child": str(each["child"]),
+            "pose": tuple(triple(each.get("translation"), (0.0, 0.0, 0.0))
+                          + triple(each.get("rotation"), (0.0, 0.0, 0.0, 1.0))),
+            "static": each.get("static") is True,
+        })
+    return edges
+
+
 def renamed_frame(name, plan):
     """One frame name under a rename plan: the explicit map first, then the
     namespace prefix unless this frame was excepted from it. A frame named by
@@ -636,7 +689,8 @@ def repose_odometry(data, corrections):
 # ---------------------------------------------------------------- the edit
 
 def rewrite_chunk(blob, renames, deleted_ids, tf_corrections=None, odom_corrections=None,
-                  tf_drops=None, tf_frame_renames=None):
+                  tf_drops=None, tf_frame_renames=None, tf_additions=None,
+                  tf_add_states=None):
     """Return the chunk's records with deleted channels and their messages gone
     and renamed channels renamed, plus the per-channel message index entries the
     new layout needs, plus how many tf edges were dropped. Offsets in a message
@@ -665,6 +719,10 @@ def rewrite_chunk(blob, renames, deleted_ids, tf_corrections=None, odom_correcti
                 dropped += gone
             if tf_frame_renames and channel_id in tf_frame_renames:
                 payload, _ = rename_tf_frames(body[22:], tf_frame_renames[channel_id])
+                body = body[:22] + payload
+            if tf_additions and channel_id in tf_additions:
+                payload, _ = add_tf_edges(body[22:], log_time, tf_additions[channel_id],
+                                          tf_add_states[channel_id])
                 body = body[:22] + payload
             if tf_corrections and channel_id in tf_corrections:
                 body = body[:22] + repose_tf_message(body[22:], tf_corrections[channel_id])
@@ -775,6 +833,13 @@ def main():
                         help="left-multiply the pose on a nav_msgs/Odometry topic (repeatable). "
                              "The twist is NOT rotated: it is expressed in the child frame, which "
                              "a parent-side correction does not move")
+    parser.add_argument("--add-tf", metavar="JSON",
+                        help="add tf edges, given as one json object or a list of them: "
+                             "{parent, child, translation, rotation, static}. A dynamic edge is "
+                             "appended to every tf message already in the file, so it arrives at "
+                             "the rate tf is already published at. A static edge additionally "
+                             "goes on /tf_static, and is republished on /tf about every 0.45 s "
+                             "because dimos does not read tf_static yet")
     parser.add_argument("--copy-topic-from", metavar="OTHER.mcap:TOPIC",
                         help="append every message on this topic, from another mcap, into this "
                              "one. Nothing already here moves: the new chunks land where the old "
@@ -823,7 +888,7 @@ def main():
         if renames or deletes or arguments.post_mul_tf_edge or arguments.post_mul_odom \
                 or arguments.pre_mul_tf_edge or arguments.pre_mul_odom \
                 or arguments.drop_tf_edge or arguments.rename_tf_frame \
-                or arguments.namespace_tf or arguments.compact:
+                or arguments.namespace_tf or arguments.add_tf or arguments.compact:
             sys.exit("--cut-at writes new files; run it on its own, then edit the pieces")
         mcap = Mcap(arguments.recording)
         split(mcap, arguments.recording, arguments.cut_at, arguments.head, arguments.tail)
@@ -844,10 +909,10 @@ def main():
     if not (renames or deletes or arguments.post_mul_tf_edge or arguments.post_mul_odom
             or arguments.pre_mul_tf_edge or arguments.pre_mul_odom
             or arguments.drop_tf_edge or arguments.rename_tf_frame or arguments.namespace_tf
-            or arguments.compact):
+            or arguments.add_tf or arguments.compact):
         sys.exit("nothing to do: pass --rename, --delete, --drop-tf-edge, --rename-tf-frame, "
                  "--namespace-tf, --post-mul-tf-edge, --pre-mul-tf-edge, --post-mul-odom, "
-                 "--pre-mul-odom, --copy-topic-from, --compact or --cut-at")
+                 "--pre-mul-odom, --add-tf, --copy-topic-from, --compact or --cut-at")
     if renames.keys() & deletes:
         sys.exit("a topic cannot be both renamed and deleted")
 
@@ -894,6 +959,29 @@ def main():
         if not tf_frame_renames:
             sys.exit("no tf2_msgs/msg/TFMessage topic in this file")
 
+    # Added edges are keyed per TFMessage channel, like a drop or a rename, and
+    # carry a little state so the 0.45 s spacing survives crossing a chunk.
+    tf_additions = {}
+    tf_add_states = {}
+    added_edges = []
+    static_channel = None
+    if arguments.add_tf:
+        added_edges = tf_edges_from_json(arguments.add_tf)
+        plan = {
+            "dynamic": [each for each in added_edges if not each["static"]],
+            "static": [each for each in added_edges if each["static"]],
+        }
+        for channel in mcap.channels.values():
+            if mcap.schemas.get(channel.schema_id) != "tf2_msgs/msg/TFMessage":
+                continue
+            if channel.topic.endswith("_static"):
+                static_channel = channel
+                continue
+            tf_additions[channel.id] = plan
+            tf_add_states[channel.id] = {"last_static": -(1 << 62)}
+        if not tf_additions:
+            sys.exit("no dynamic tf2_msgs/msg/TFMessage topic in this file to add to")
+
     odom_corrections = {}
     for side, texts in (("post", arguments.post_mul_odom), ("pre", arguments.pre_mul_odom)):
         for text in texts:
@@ -906,7 +994,8 @@ def main():
     if arguments.compact and not (renames or deletes or arguments.post_mul_tf_edge
                                   or arguments.post_mul_odom or arguments.pre_mul_tf_edge
                                   or arguments.pre_mul_odom or arguments.drop_tf_edge
-                                  or arguments.rename_tf_frame or arguments.namespace_tf):
+                                  or arguments.rename_tf_frame or arguments.namespace_tf
+                                  or arguments.add_tf):
         print(f"{arguments.recording.name}: {mcap.size:,} bytes, {len(mcap.chunk_indexes)} chunks, "
               f"{len(mcap.channels)} channels")
         free = free_regions(mcap)
@@ -922,7 +1011,8 @@ def main():
         return
 
     deleted_ids, touched = plan_edit(mcap, renames, deletes)
-    reposed = set(tf_corrections) | set(odom_corrections) | set(tf_drops) | set(tf_frame_renames)
+    reposed = (set(tf_corrections) | set(odom_corrections) | set(tf_drops)
+               | set(tf_frame_renames) | set(tf_additions))
     if reposed:
         touched = sorted(set(touched) | {
             position for position, index in enumerate(mcap.chunk_indexes)
@@ -943,6 +1033,9 @@ def main():
     if arguments.namespace_tf:
         skipped = ", ".join(sorted(arguments.except_tf_frame)) or "nothing"
         print(f"  prefix every tf frame with {arguments.namespace_tf!r}, except {skipped}")
+    for edge in added_edges:
+        kind = "static" if edge["static"] else "dynamic"
+        print(f"  add {kind} tf edge {edge['parent']} -> {edge['child']}")
     for text in arguments.post_mul_tf_edge:
         print(f"  move tf edge {text.rsplit(':', 1)[0]} (right)")
     for text in arguments.pre_mul_tf_edge:
@@ -971,7 +1064,7 @@ def main():
         start, end, compression, blob = mcap.read_chunk(index)
         records, entries, gone = rewrite_chunk(
             blob, renames, deleted_ids, tf_corrections, odom_corrections, tf_drops,
-            tf_frame_renames)
+            tf_frame_renames, tf_additions, tf_add_states)
         dropped_edges += gone
         if not entries:
             # Every message in this chunk belonged to a deleted topic. Keeping the
@@ -1015,6 +1108,10 @@ def main():
 
     indexes = [new_indexes.get(position, index) for position, index in enumerate(mcap.chunk_indexes)]
     indexes = [index for index in indexes if index is not None]
+    static_edges = [each for each in added_edges if each["static"]]
+    if static_edges:
+        sibling = mcap.channels[next(iter(tf_additions))]
+        write_at = append_static_tf(mcap, write_at, indexes, static_edges, static_channel, sibling)
     _write_tail(mcap, write_at, indexes, renames, deleted_ids)
 
     # Only now that the summary points somewhere else is it safe to blank the old
@@ -1097,6 +1194,59 @@ def compact(mcap, path):
     os.replace(temp, path)
     print(f"compacted {mcap.size:,} -> {written:,} bytes "
           f"({mcap.size - written:,} of holes and filler closed); {time.monotonic() - started:.0f}s")
+
+
+def append_static_tf(mcap, write_at, indexes, edges, static_channel, sibling):
+    """One /tf_static message carrying the static edges, as a new chunk.
+
+    It reuses the dynamic tf channel's schema: /tf and /tf_static are the same
+    message type, so there is nothing new to declare beyond the channel itself.
+    CDR little-endian, which is what every ROS 2 writer emits."""
+    channel = static_channel
+    fresh_channel = channel is None
+    if fresh_channel:
+        channel = Channel(max(mcap.channels) + 1, sibling.schema_id, "/tf_static",
+                          sibling.message_encoding, list(sibling.metadata))
+        mcap.channels[channel.id] = channel
+
+    log_time = (mcap.statistics or {}).get("message_start_time", 0)
+    stamp = (log_time // 1_000_000_000, log_time % 1_000_000_000)
+    payload = encode_tf_message(
+        b"\x00\x01\x00\x00",
+        [(stamp, edge["parent"], edge["child"], edge["pose"]) for edge in edges])
+
+    records = bytearray()
+    if fresh_channel:
+        records.extend(channel.encode())
+    offset = len(records)
+    records.extend(record(OP_MESSAGE, struct.pack("<HIQQ", channel.id, 0, log_time, log_time)
+                          + payload))
+
+    compression = mcap.chunk_indexes[0]["compression"] if mcap.chunk_indexes else "zstd"
+    chunk = encode_chunk(log_time, log_time, bytes(records), compression)
+    index_bytes = encode_message_index(channel.id, [(log_time, offset)])
+    indexes.append({
+        "message_start_time": log_time,
+        "message_end_time": log_time,
+        "chunk_start_offset": write_at,
+        "chunk_length": len(chunk),
+        "message_index_offsets": [(channel.id, write_at + len(chunk))],
+        "message_index_length": len(index_bytes),
+        "compression": compression,
+        "compressed_size": struct.unpack_from(
+            "<Q", chunk, RECORD_OVERHEAD + 8 + 8 + 8 + 4 + 4 + len(compression))[0],
+        "uncompressed_size": len(records),
+    })
+    mcap.file.seek(write_at)
+    mcap.file.write(chunk)
+    mcap.file.write(index_bytes)
+
+    if mcap.statistics is not None:
+        counts = mcap.statistics["channel_message_counts"]
+        counts[channel.id] = counts.get(channel.id, 0) + 1
+        mcap.statistics["chunk_count"] = mcap.statistics.get("chunk_count", 0) + 1
+    print(f"  /tf_static: 1 message{' on a new channel' if fresh_channel else ''}")
+    return write_at + len(chunk) + len(index_bytes)
 
 
 # ---------------------------------------------------------------- copying a topic in
