@@ -1,5 +1,6 @@
 // Where sub-tools live once they have been downloaded, and how they get there.
 
+import { DtkError } from "./errors.js"
 import { runPython } from "./python.js"
 import { version } from "./version.js"
 
@@ -160,7 +161,7 @@ async function ensureNixClosure(tool, target, { force = false } = {}) {
         nixVersion = null
     }
     if (nixVersion === null) {
-        throw new Error(
+        throw new DtkError(
             `dtk: ${tool.name} for ${target} is built by nix and needs nix here to run.\n` +
             `     Install it, then run \`dtk update ${tool.name}\`:\n` +
             `       curl -fsSL https://install.determinate.systems/nix | sh -s -- install`,
@@ -173,19 +174,42 @@ async function ensureNixClosure(tool, target, { force = false } = {}) {
         args: ["--import"],
         stdin: "piped",
         stdout: "null",
-        stderr: "inherit",
+        stderr: "piped",
     }).spawn()
+    const complaints = []
+    const watching = (async () => {
+        for await (const chunk of importer.stderr.pipeThrough(new TextDecoderStream())) {
+            complaints.push(chunk)
+            await Deno.stderr.write(new TextEncoder().encode(chunk))
+        }
+    })()
     const file = await Deno.open(archive, { read: true })
-    await file.readable
-        .pipeThrough(new DecompressionStream("gzip"))
-        .pipeTo(importer.stdin)
+    try {
+        await file.readable
+            .pipeThrough(new DecompressionStream("gzip"))
+            .pipeTo(importer.stdin)
+    } catch (error) {
+        // nix-store gave up early and closed its end; its own complaint below is
+        // the useful one, not "broken pipe"
+        if (!(error instanceof Deno.errors.BrokenPipe)) {
+            throw error
+        }
+    }
     const { success } = await importer.status
+    await watching
     Deno.removeSync(archive)
     if (!success) {
-        throw new Error(
-            `dtk: could not import ${tool.name}'s runtime closure.\n` +
-            `     Unsigned paths need a trusted user; add yourself to trusted-users in nix.conf.`,
-        )
+        const said = complaints.join("")
+        if (said.includes("lacks a signature by a trusted key")) {
+            throw new DtkError(
+                `dtk: nix refused ${tool.name}'s runtime closure because you are not a trusted\n` +
+                `     user, and these paths are unsigned. Add yourself, then try again:\n` +
+                `       echo "trusted-users = root $(whoami)" | sudo tee -a /etc/nix/nix.conf\n` +
+                `       sudo systemctl restart nix-daemon   # or: sudo pkill nix-daemon\n` +
+                `     On Jeff's machines \`nix_add_self_as_trusted_user\` does the same thing.`,
+            )
+        }
+        throw new DtkError(`dtk: could not import ${tool.name}'s runtime closure`)
     }
     Deno.writeTextFileSync(stamp, `${assetName}\n`)
 }
