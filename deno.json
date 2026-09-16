@@ -1,0 +1,12 @@
+{
+    "tasks": {
+        "dtk": "deno run --allow-all main.js",
+        "install": "deno install -g -f -A -n dtk main.js"
+    },
+    "fmt": {
+        "useTabs": false,
+        "indentWidth": 4,
+        "semiColons": false,
+        "lineWidth": 100
+    }
+}
