@@ -95,6 +95,10 @@ async function ensureScript(tool, { force }) {
         Deno.mkdirSync(to.replace(/\/[^/]+$/, ""), { recursive: true })
         Deno.writeFileSync(to, new Uint8Array(await response.arrayBuffer()))
     }
+    if (tool.kind === "exec") {
+        // it carries its own shebang; the kernel takes it from there
+        Deno.chmodSync(localPathOf(tool.entry), 0o755)
+    }
     Deno.writeTextFileSync(stampOf(tool), currentStamp(tool))
     return localPathOf(tool.entry)
 }
@@ -161,13 +165,6 @@ export async function runTool(tool, args) {
     if (tool.kind === "deno") {
         command = new Deno.Command(Deno.execPath(), {
             args: ["run", ...(tool.permissions || ["--allow-all"]), path, ...args],
-            stdin: "inherit",
-            stdout: "inherit",
-            stderr: "inherit",
-        })
-    } else if (tool.kind === "sh") {
-        command = new Deno.Command("/bin/sh", {
-            args: [path, ...args],
             stdin: "inherit",
             stdout: "inherit",
             stderr: "inherit",

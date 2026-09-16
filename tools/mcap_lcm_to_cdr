@@ -1,0 +1,231 @@
+#!/bin/sh
+''''true
+# Runs as /bin/sh first, then re-execs itself under python. The script needs a
+# dimos checkout for `import dimos` and its project environment for the deps,
+# and that path is per-machine, which a plain shebang cannot express. Set
+# DIMOS_REPO to pick one. The probe looks for the module this script actually
+# imports rather than for the folder, because the clones sit on different
+# branches and not all of them have it.
+for candidate in "$DIMOS_REPO" "$HOME/repos/dimos" "$HOME/repos/dimos2" \
+                 "$HOME/repos/dimos3" "$HOME/repos/dimos4" \
+                 "$HOME/repos/dimos5" "$HOME/repos/dimos6" "$HOME/dimos"; do
+    if [ -n "$candidate" ] && [ -f "$candidate/dimos/msgs/geometry_msgs/PointStamped.py" ]; then
+        repo="$candidate"
+        break
+    fi
+done
+if [ -z "$repo" ]; then
+    echo "mcap_lcm_to_cdr: found no dimos checkout containing dimos/msgs/geometry_msgs/PointStamped.py" >&2
+    echo "mcap_lcm_to_cdr: set DIMOS_REPO to one" >&2
+    exit 1
+fi
+exec uv run --project "$repo" --with mcap --with rosbags python "$0" "$@"
+# '''
+"""Re-encode a web_ctrl .mcap so Foxglove can read it.
+
+web_ctrl writes `image`, `color_image` and `tf` as ROS2 CDR but leaves everything else as
+raw LCM bytes with no schema, which Foxglove cannot decode -- so the point clouds and voxel
+maps show up as undecodable channels. This decodes those with the dimos types and re-encodes
+them as CDR, passing the already-CDR channels through untouched.
+"""
+
+import argparse
+import importlib.util
+import sys
+import time
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+
+from mcap.reader import make_reader
+from mcap.writer import Writer
+
+from dimos.msgs.geometry_msgs.PointStamped import PointStamped
+from dimos.msgs.geometry_msgs.PoseStamped import PoseStamped
+from dimos.msgs.nav_msgs.Odometry import Odometry
+from dimos.msgs.sensor_msgs.CameraInfo import CameraInfo
+from dimos.msgs.sensor_msgs.Imu import Imu
+from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
+
+# db_to_mcap already holds the dimos -> ROS2 message converters; reuse rather than re-derive.
+_path = Path.home() / "Commands" / "db_to_mcap"
+# db_to_mcap has no .py suffix, so the loader has to be named explicitly.
+_spec = importlib.util.spec_from_loader("db_to_mcap", SourceFileLoader("db_to_mcap", str(_path)))
+db_to_mcap = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(db_to_mcap)
+
+TOPIC_TYPES = {
+    "depth_cloud": PointCloud2,
+    "global_map": PointCloud2,
+    "local_map": PointCloud2,
+    "surface_map": PointCloud2,
+    "imu": Imu,
+    "odometry": Odometry,
+    "odom": PoseStamped,
+    "goal": PointStamped,
+    "way_point": PointStamped,
+    "goal_pose": PoseStamped,
+    "source_odometry": Odometry,
+    "camera_info": CameraInfo,
+    "color_camera_info": CameraInfo,
+    "depth_camera_info": CameraInfo,
+}
+
+CompressedImage = db_to_mcap.typestore.types["sensor_msgs/msg/CompressedImage"]
+
+# `encoding` on a raw Image is supposed to name a pixel layout; web_ctrl puts a container
+# format there instead, which Foxglove refuses to render. Those channels get rewritten.
+CONTAINER_ENCODINGS = {"jpeg", "jpg", "png"}
+
+
+def to_compressed_image(payload):
+    image = db_to_mcap.typestore.deserialize_cdr(payload, "sensor_msgs/msg/Image")
+    return db_to_mcap.typestore.serialize_cdr(
+        CompressedImage(header=image.header, format=image.encoding, data=image.data),
+        "sensor_msgs/msg/CompressedImage",
+    )
+
+
+def probe_image_encodings(path, topics):
+    encodings = {}
+    with open(path, "rb") as probe_file:
+        for _, channel, message in make_reader(probe_file).iter_messages(topics=sorted(topics)):
+            if channel.topic in encodings:
+                continue
+            encodings[channel.topic] = db_to_mcap.typestore.deserialize_cdr(
+                message.data, "sensor_msgs/msg/Image"
+            ).encoding
+            if len(encodings) == len(topics):
+                break
+    return encodings
+
+
+DIMOS_TO_ROS = {
+    PointCloud2: ("sensor_msgs/msg/PointCloud2", db_to_mcap.convert_pointcloud),
+    Imu: ("sensor_msgs/msg/Imu", db_to_mcap.convert_imu),
+    Odometry: ("nav_msgs/msg/Odometry", db_to_mcap.convert_odometry),
+    PoseStamped: ("geometry_msgs/msg/PoseStamped", db_to_mcap.convert_pose_stamped),
+    PointStamped: ("geometry_msgs/msg/PointStamped", db_to_mcap.convert_point_stamped),
+    CameraInfo: ("sensor_msgs/msg/CameraInfo", db_to_mcap.convert_camera_info),
+}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("input", help="web_ctrl .mcap")
+    parser.add_argument("-o", "--out", help="output .mcap (default: <input>.cdr.mcap)")
+    parser.add_argument("--only", help="comma-separated topics to keep")
+    arguments = parser.parse_args()
+
+    input_path = Path(arguments.input).expanduser()
+    output_path = (
+        Path(arguments.out).expanduser() if arguments.out else input_path.with_suffix(".cdr.mcap")
+    )
+    wanted = set(arguments.only.split(",")) if arguments.only else None
+
+    with open(input_path, "rb") as input_file, open(output_path, "wb") as output_file:
+        reader = make_reader(input_file)
+        summary = reader.get_summary()
+        writer = Writer(output_file)
+        writer.start(profile="ros2", library="mcap_lcm_to_cdr")
+
+        image_topics = {
+            channel.topic
+            for channel in summary.channels.values()
+            if channel.message_encoding == "cdr"
+            and summary.schemas[channel.schema_id].name == "sensor_msgs/msg/Image"
+        }
+        image_encodings = probe_image_encodings(input_path, image_topics) if image_topics else {}
+
+        plans = {}
+        for channel_id, channel in sorted(summary.channels.items()):
+            name = channel.topic.lstrip("/").split("#")[0]
+            if wanted and name not in wanted:
+                continue
+            if channel.message_encoding == "cdr":
+                schema = summary.schemas[channel.schema_id]
+                if image_encodings.get(channel.topic) in CONTAINER_ENCODINGS:
+                    definition, _ = db_to_mcap.typestore.generate_msgdef(
+                        "sensor_msgs/msg/CompressedImage"
+                    )
+                    new_schema = writer.register_schema(
+                        name="sensor_msgs/msg/CompressedImage",
+                        encoding="ros2msg",
+                        data=definition.encode(),
+                    )
+                    new_channel = writer.register_channel(
+                        topic="/" + name, message_encoding="cdr", schema_id=new_schema
+                    )
+                    plans[channel_id] = (new_channel, to_compressed_image)
+                    print(
+                        f"  {name:20} Image -> CompressedImage ({image_encodings[channel.topic]})",
+                        flush=True,
+                    )
+                    continue
+                new_schema = writer.register_schema(
+                    name=schema.name, encoding=schema.encoding, data=schema.data
+                )
+                new_channel = writer.register_channel(
+                    topic="/" + name, message_encoding="cdr", schema_id=new_schema
+                )
+                plans[channel_id] = (new_channel, None)
+                print(f"  {name:20} passthrough  {schema.name}", flush=True)
+                continue
+            dimos_type = TOPIC_TYPES.get(name)
+            if dimos_type is None:
+                print(f"  {name:20} SKIPPED (no dimos type mapping)", file=sys.stderr, flush=True)
+                continue
+            ros_type, converter = DIMOS_TO_ROS[dimos_type]
+            definition, _ = db_to_mcap.typestore.generate_msgdef(ros_type)
+            new_schema = writer.register_schema(
+                name=ros_type, encoding="ros2msg", data=definition.encode()
+            )
+            new_channel = writer.register_channel(
+                topic="/" + name, message_encoding="cdr", schema_id=new_schema
+            )
+            def transform(payload, dimos_type=dimos_type, ros_type=ros_type, converter=converter):
+                decoded = dimos_type.lcm_decode(payload)
+                return db_to_mcap.typestore.serialize_cdr(converter(decoded, decoded.ts), ros_type)
+
+            plans[channel_id] = (new_channel, transform)
+            print(f"  {name:20} lcm -> cdr   {ros_type}", flush=True)
+
+        written = 0
+        failed = 0
+        started_at = time.monotonic()
+        planned_topics = sorted(
+            {channel.topic for channel_id, channel in summary.channels.items() if channel_id in plans}
+        )
+        for schema, channel, message in reader.iter_messages(topics=planned_topics):
+            plan = plans.get(channel.id)
+            if plan is None:
+                continue
+            new_channel, transform = plan
+            if transform is None:
+                payload = message.data
+            else:
+                try:
+                    payload = transform(message.data)
+                except Exception as error:
+                    failed += 1
+                    if failed <= 5:
+                        print(f"  ! {channel.topic}: {error}", file=sys.stderr, flush=True)
+                    continue
+            writer.add_message(
+                channel_id=new_channel,
+                log_time=message.log_time,
+                publish_time=message.publish_time,
+                data=payload,
+            )
+            written += 1
+            if written % 20000 == 0:
+                rate = written / (time.monotonic() - started_at)
+                print(f"  {written} messages ({rate:.0f}/s)", flush=True)
+
+        writer.finish()
+
+    size_gb = output_path.stat().st_size / 1e9
+    print(f"wrote {written} messages ({failed} failed) -> {output_path} [{size_gb:.2f} GB]")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,8 +1,20 @@
 // Every sub-tool dtk knows about. Nothing here is downloaded until it is run.
 //
 // kind: "deno"   — a self-contained deno script, fetched into the cache and run
-// kind: "sh"     — a posix-shell script, fetched into the cache and run
+// kind: "exec"   — a script carrying its own shebang (uv, /bin/sh), run directly
 // kind: "binary" — a precompiled executable pulled from a github release
+//
+// `formats` says which recording formats the tool accepts, and is what `dtk data`
+// checks before handing a file over.
+
+const denoRecordingPermissions = [
+    "--allow-read",
+    "--allow-write",
+    "--allow-net",
+    "--allow-env",
+    "--allow-ffi",
+    "--unstable-ffi",
+]
 
 export const tools = [
     {
@@ -10,7 +22,32 @@ export const tools = [
         kind: "deno",
         description: "Summarize what is inside a memory2 .db or an .mcap",
         entry: "tools/db_summary.js",
-        permissions: ["--allow-read", "--allow-write", "--allow-net", "--allow-env", "--allow-ffi", "--unstable-ffi"],
+        formats: ["db", "mcap"],
+        permissions: denoRecordingPermissions,
+    },
+    {
+        name: "db_tree",
+        kind: "deno",
+        description: "Print the tf frame tree of a memory2 .db",
+        entry: "tools/db_tree.js",
+        formats: ["db"],
+        permissions: ["--allow-read", "--allow-env", "--allow-ffi", "--unstable-ffi"],
+    },
+    {
+        name: "db_cp",
+        kind: "deno",
+        description: "Copy one stream from one memory2 .db into another",
+        entry: "tools/db_cp.js",
+        formats: ["db"],
+        permissions: denoRecordingPermissions,
+    },
+    {
+        name: "db_delete",
+        kind: "deno",
+        description: "Drop a stream from a memory2 .db",
+        entry: "tools/db_delete.js",
+        formats: ["db"],
+        permissions: denoRecordingPermissions,
     },
     {
         name: "urdf_edit",
@@ -33,27 +70,61 @@ export const tools = [
         kind: "deno",
         description: "Top-down density heatmap of a recording, with the odometry path over it",
         entry: "tools/heatmap.js",
-        permissions: ["--allow-read", "--allow-write", "--allow-net", "--allow-env", "--allow-ffi", "--unstable-ffi"],
+        formats: ["db", "mcap"],
+        permissions: denoRecordingPermissions,
     },
     {
         name: "to_video",
         kind: "deno",
         description: "Turn an image stream in a memory2 recording into an mp4",
         entry: "tools/to_video.js",
-        permissions: ["--allow-read", "--allow-write", "--allow-net", "--allow-env", "--allow-run", "--allow-ffi", "--unstable-ffi"],
+        formats: ["db"],
+        permissions: [...denoRecordingPermissions, "--allow-run"],
     },
     {
         name: "db_to_mcap",
-        kind: "sh",
+        kind: "exec",
         description: "Convert a memory2 .db recording into a ROS 2 .mcap (needs a dimos checkout and uv)",
         entry: "tools/db_to_mcap",
+        formats: ["db"],
     },
     {
         name: "mcap_to_db",
         kind: "deno",
         description: "Copy ROS 2 topics out of an .mcap into a memory2 .db, re-encoded as LCM",
         entry: "tools/mcap_to_db.js",
-        permissions: ["--allow-read", "--allow-write", "--allow-net", "--allow-env", "--allow-ffi", "--unstable-ffi"],
+        formats: ["mcap"],
+        permissions: denoRecordingPermissions,
+    },
+    {
+        name: "db_to_rrd",
+        kind: "deno",
+        description: "Convert a memory2 .db recording into a rerun .rrd",
+        entry: "tools/db_to_rrd.js",
+        formats: ["db"],
+        permissions: [...denoRecordingPermissions, "--allow-run"],
+    },
+    {
+        name: "mcap_edit",
+        kind: "exec",
+        description: "Rename or delete topics and tf edges in an .mcap without copying it (needs uv)",
+        entry: "tools/mcap_edit",
+        formats: ["mcap"],
+    },
+    {
+        name: "mcap_check",
+        kind: "deno",
+        description: "Report whether Foxglove will actually be able to draw a ROS 2 .mcap",
+        entry: "tools/mcap_check.js",
+        formats: ["mcap"],
+        permissions: ["--allow-read", "--allow-net", "--allow-env"],
+    },
+    {
+        name: "mcap_lcm_to_cdr",
+        kind: "exec",
+        description: "Re-encode the raw-LCM channels of an .mcap as CDR, so Foxglove can read them (needs a dimos checkout and uv)",
+        entry: "tools/mcap_lcm_to_cdr",
+        formats: ["mcap"],
     },
     {
         name: "web_ctrl",

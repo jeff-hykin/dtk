@@ -2,6 +2,7 @@
 
 import { Command } from "jsr:@cliffy/command@1.0.0-rc.7"
 import { commands } from "./commands/mod.js"
+import { DtkError } from "./errors.js"
 import { tools, toolsByName } from "./registry.js"
 import { runTool } from "./tool_store.js"
 import { version } from "./version.js"
@@ -42,7 +43,12 @@ try {
     await cli.parse(Deno.args)
 } catch (error) {
     // `dtk list | head` closes the pipe on us partway through; that is not an error
-    if (!(error instanceof Deno.errors.BrokenPipe)) {
+    if (error instanceof Deno.errors.BrokenPipe) {
+        // nothing left to write to
+    } else if (error instanceof DtkError) {
+        console.error(error.message)
+        Deno.exit(2)
+    } else {
         throw error
     }
 }
