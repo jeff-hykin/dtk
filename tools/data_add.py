@@ -295,12 +295,23 @@ def main() -> None:
     deployed = []
 
     def remap_frame(payload, remappings):
+        """Rename the frames a message claims to be in, on the way into the module.
+
+        A dimos message carries `frame_id` and `child_frame_id` on itself rather
+        than under a `header` -- the ROS shape is flattened -- so both spellings
+        are tried."""
         if not remappings:
             return payload
-        header = getattr(payload, "header", None)
-        frame = getattr(header, "frame_id", None)
-        if frame is not None and frame in remappings:
-            setattr(header, "frame_id", remappings[frame])
+        for holder in (payload, getattr(payload, "header", None)):
+            if holder is None:
+                continue
+            for field in ("frame_id", "child_frame_id"):
+                frame = getattr(holder, field, None)
+                if isinstance(frame, str) and frame in remappings:
+                    try:
+                        setattr(holder, field, remappings[frame])
+                    except Exception:
+                        pass  # a frozen message; nothing to do about it here
         return payload
 
     try:

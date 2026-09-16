@@ -38,7 +38,9 @@ Add to this freely. Checked = done and verified.
        One warning per KIND of breakage (multiple parents, multiple trees) but it keeps watching
     8. every 60 s prints the Hz of topics above 0.5 Hz, and which modules are using a lot of CPU
        or memory
-    - [ ] 7 and 8 need verifying on a dimos branch that has `make_transport`
+    - [~] BLOCKED: 7 and 8 need a dimos branch that has `make_transport`. CudaLaptop's dimos6
+          has none at all, so there is nothing for them to subscribe through; they say so and the
+          run carries on. The lookup tries three module paths.
 
 ## `dtk data <verb>` — one namespace for recordings
 
@@ -65,7 +67,10 @@ one of the two, it says so and stops rather than half-working.
       destination moves: the new chunks land where the old summary started and a fresh summary
       is written past them, so it costs the size of what is copied, not of the file it lands in.
       The channel and schema are renumbered on the way in.
-    - [ ] copying between a .db and an .mcap still means converting one first
+    - [~] copying between a .db and an .mcap still means converting one first, and that is where
+          it stays: the two formats encode differently (LCM vs CDR) and a single-stream converter
+          would be a second, half-tested copy of `db_to_mcap`/`mcap_to_db`. The error says which
+          command to run.
 
 ### tf
 
@@ -87,8 +92,14 @@ one of the two, it says so and stops rather than half-working.
           decoder for every message in the file — out of proportion to the fix. Instead
           `tf full_check` now REPORTS it (`unplaced`), and both rename tools say so when they
           finish, so the problem is always visible even though it is not automatic.
-- [ ] `dtk data tf add <recording> <json>` — add an edge. Settle the json shape: parent, child,
-      translation, rotation, static vs dynamic, and which topic it lands on.
+- [x] `dtk data tf add <recording> '<json>'` — one edge or a list:
+      `{parent, child, translation, rotation, static}`, translation defaulting to [0,0,0] and
+      rotation to [0,0,0,1] in ROS 2's x,y,z,w order, either also accepted as {x,y,z[,w]}.
+      A static edge goes on `tf_static` the way ROS 2 does AND is republished on `tf` every
+      0.45 s, because dimos does not read tf_static yet. A dynamic edge is appended to every tf
+      message already in the file, so it arrives at the rate tf is already published at rather
+      than one this invented. A recording with no tf at all gets a `tf` stream created for it.
+      Works for a db (`db_tf_add`) and an mcap (`mcap_edit --add-tf`).
 - [x] `dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]` — both formats,
       through the same rename path. Running it twice prefixes twice; nothing distinguishes an
       already-prefixed name from one that starts that way.
@@ -138,7 +149,10 @@ dtk data add <db_or_mcap_file> '[
       `run1/` does not; that is checked before anything is renamed.
 - [x] `tf_remappings` is `{"old": "new"}`, rewriting `header.frame_id` on the way INTO the
       module and leaving the output as the module wrote it.
-    - [ ] not exercised by a test yet — the module used for testing has nothing to remap
+    - [x] verified: with `{"odom": "world"}`, the input stream still reads `odom` and what the
+          module echoed back reads `world`. Finding it needed a fix — a dimos message carries
+          `frame_id` / `child_frame_id` on ITSELF, not under a `header`, so the ROS-shaped lookup
+          silently matched nothing.
 
 Answered: the coordinator spins the modules up. **But `ModuleCoordinator.deploy()` kills its
 worker on both machines tested** — EOFError on the Mac (dimos3 and dimos6), ConnectionResetError
@@ -146,7 +160,10 @@ on CudaLaptop (dimos6) — with a plain script and no dtk involved. So `data add
 building the module in this process, loudly, and `--in-process` skips the attempt. That fallback
 is the path that is actually tested.
 
-- [ ] revisit once `ModuleCoordinator.deploy()` works again, and verify the coordinator path
+- [~] BLOCKED, not skipped: verify the coordinator path once `ModuleCoordinator.deploy()` works.
+      It kills its worker from a bare script on both machines available (EOFError on the Mac,
+      ConnectionResetError on CudaLaptop) while `dimos run` is fine, so this is a dimos-side
+      thing to chase, not a dtk one.
 
 ## Tools registered in dtk
 
@@ -175,12 +192,20 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
       renders a full building floorplan.
     - `tf_check` learned the same thing; `db_tf_rename` and `db_tf_add` REFUSE a compressed tf
       stream rather than writing plaintext into one, since they re-encode.
-- [ ] Linux `icp_stitch` needs glibc 2.34, so an Ubuntu 20.04 / L4T 35 target is out.
+- [~] Linux `icp_stitch` needs glibc 2.34, so an Ubuntu 20.04 / L4T 35 target is out. NOT going
+      to fix: the floor comes from the oldest runner GitHub still offers (ubuntu-22.04), and
+      every target that matters clears it — the Orin on L4T R36 is Ubuntu 22.04 and was verified.
+      Going lower would mean building in a container on an older base, which is a lot of machinery
+      for a target nobody is on.
 
 ## Later
 
-- [ ] Bring `urdf_edit` up to date with the upgrades in
-      https://github.com/jeff-hykin/dim-urdf-editor — dtk's copy is the older `~/Commands/urdf-view`.
+- [x] `urdf_edit` is now the dim-urdf-editor frontend. dtk serves its dim-app websocket bus
+      itself (`/ws`, save / load / recent into `~/.local/share/dim/urdf_saves`, the same directory
+      the desktop uses) plus `/assets/theme.css`, and `app.js` fetches `/urdf.xml` on boot so the
+      file given on the command line is what opens — inside the desktop that 404s and its own
+      sample stands. Verified in a real browser: 0 console errors, Recent populated from disk,
+      11 links parsed from the handheld_recorder URDF.
 
 - [ ] Turn https://github.com/jeff-hykin/dim-lcm-constellation into a standalone server/cli tool
       and add it to dtk. Needs adaptation and a recompile. What it is made of, from reading it:
