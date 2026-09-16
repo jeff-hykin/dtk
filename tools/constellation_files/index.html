@@ -1,0 +1,1472 @@
+<!DOCTYPE html>
+<!--
+Copyright 2025-2026 Dimensional Inc.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Dimensional · Module Flow</title>
+<link rel="stylesheet" href="/assets/theme.css" />
+<style>
+  /* A React-Flow-style module/topic graph, but hand-rolled with DOM nodes + one
+     SVG edge layer (no React, no canvas). Everything lives inside `.viewport`,
+     which is pan/zoomed with a single CSS transform, so node cards, edge paths
+     and labels all scale together and stay crisp. Colors come from the shared
+     Science theme (/assets/theme.css) via `var(--…)` inline styles, so the graph
+     tracks light/dark automatically with no per-token JS probing. */
+  :root { --node-radius: 10px; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg);
+    font-family: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
+    color: var(--fg); font-variant-numeric: tabular-nums; }
+
+  /* ── flow surface ─────────────────────────────────────────────────────── */
+  #flow { position: fixed; inset: 0; overflow: hidden; cursor: grab;
+    /* React-Flow's signature dotted lattice; it pans/zooms via background-* set in JS */
+    background-color: var(--bg);
+    background-image: radial-gradient(color-mix(in oklch, var(--muted-fg) 40%, transparent) 1px, transparent 0);
+    background-size: 22px 22px; background-position: 0 0; }
+  #flow.grabbing { cursor: grabbing; }
+  #viewport { position: absolute; top: 0; left: 0; transform-origin: 0 0; will-change: transform; }
+  #edges { position: absolute; overflow: visible; pointer-events: none; }
+  #edges > path { fill: none; }  /* edge lines only — NOT the nested marker/arrowhead paths */
+
+  /* ── nodes ────────────────────────────────────────────────────────────── */
+  .node { position: absolute; box-sizing: border-box; user-select: none; cursor: pointer;
+    border: 1px solid var(--border); border-radius: var(--node-radius);
+    background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,0.18), 0 4px 14px rgba(0,0,0,0.10);
+    transition: box-shadow .12s ease, border-color .12s ease, opacity .12s ease; }
+  .node.dim { opacity: 0.26; }
+  .node.hi { border-color: color-mix(in oklch, var(--accent, var(--info)) 70%, var(--border));
+    box-shadow: 0 0 0 1px var(--accent, var(--info)), 0 6px 20px rgba(0,0,0,0.22); }
+  .node.pulse { border-color: var(--accent, var(--info)); }
+
+  /* module = rounded card with a left accent rail + header row */
+  .node.module { min-width: 152px;
+    background: color-mix(in oklch, var(--card) 88%, var(--info) 12%);
+    border-color: color-mix(in oklch, var(--info) 44%, var(--border)); }
+  .node.module::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 5px;
+    border-radius: var(--node-radius) 0 0 var(--node-radius); background: var(--info); }
+  .node.module .head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 9px 15px; }
+  .node.module .kind { font-size: 8px; letter-spacing: 1.5px; font-weight: 700; color: var(--info); }
+  .node.module .name { flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 600; color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node.module .chev { flex: none; font-size: 9px; color: var(--muted-fg); transition: transform .12s ease; }
+  .node.module.open .chev { transform: rotate(90deg); }
+
+  /* expanded body: the module's published / subscribed topics with live Hz */
+  .node.module .body { display: none; border-top: 1px solid var(--border); padding: 6px 12px 9px 14px; }
+  .node.module.open .body { display: block; }
+  .node.module .grp { font-size: 8px; letter-spacing: 1.5px; color: var(--muted-fg); margin: 5px 0 3px; }
+  .node.module .trow { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 1px 0; }
+  .node.module .trow .tn { flex: 1 1 auto; min-width: 0; color: var(--fg);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .node.module .trow .th { flex: none; color: var(--muted-fg); white-space: nowrap; }
+  .node.module .trow .th b { color: var(--accent, var(--info)); font-weight: 600; }
+  .node.module .trow .arrow { flex: none; color: var(--muted-fg); font-size: 10px; }
+
+  /* topic = compact pill, colored by message type */
+  .node.topic { display: flex; flex-direction: column; gap: 0; padding: 3px 11px; border-radius: 999px;
+    border-width: 1.5px; border-color: color-mix(in oklch, var(--accent, var(--info)) 80%, var(--border)); }
+  .node.topic .name { font-size: 11px; font-weight: 600; color: color-mix(in oklch, var(--fg) 62%, var(--muted-fg)); white-space: nowrap; line-height: 1.3; }
+  .node.topic .rate { font-size: 9px; color: var(--muted-fg); white-space: nowrap; line-height: 1.2; }
+  .node.topic .rate:empty { display: none; }
+  .node.topic .rate b { color: var(--accent, var(--info)); font-weight: 600; }
+  .node.topic .rate .ago { opacity: .75; }
+  .node.topic .type { display: none; font-size: 8px; letter-spacing: .5px; color: var(--accent, var(--info)); white-space: nowrap; line-height: 1.2; }
+  .node.topic:hover .type, .node.topic.hi .type { display: block; }
+  /* nobody subscribes → gray it out (override the type accent) */
+  .node.topic.orphan { border-style: dashed; --accent: var(--muted-fg);
+    border-color: color-mix(in oklch, var(--muted-fg) 42%, var(--border)); }
+  /* floating "recent activity" topic — seen live in the last 5min but not declared
+     in the blueprint (e.g. cancel_goal). Dotted ring + a small LIVE tag flag it. */
+  .node.topic.recent { border-style: dotted;
+    border-color: color-mix(in oklch, var(--accent, var(--info)) 75%, var(--border)); }
+  .node.topic.recent .rate::before { content: "recent · "; color: var(--muted-fg); font-weight: 400; }
+
+  /* the little connection handles React-Flow draws on each node edge */
+  .handle { position: absolute; width: 7px; height: 7px; border-radius: 50%;
+    background: var(--card); border: 1.5px solid var(--muted-fg); top: 50%; transform: translateY(-50%); }
+  .handle.l { left: -4px; } .handle.r { right: -4px; }
+  .node.hi .handle { border-color: var(--accent, var(--info)); }
+
+  /* the only edge label: a blueprint `.remappings(...)` rename. The topic node
+     carries the wire name, so the edge shows the module's *declared* stream name. */
+  .elabel { position: absolute; transform: translate(-50%, -50%); pointer-events: none;
+    z-index: 1; font-size: 9px; letter-spacing: .3px; white-space: nowrap;
+    padding: 1px 5px; border-radius: 999px; color: var(--muted-fg);
+    background: color-mix(in oklch, var(--bg) 85%, transparent);
+    border: 1px dashed color-mix(in oklch, var(--muted-fg) 40%, var(--border)); }
+
+  /* ── chrome: toolbar, controls, legend ────────────────────────────────── */
+  .bar { position: fixed; z-index: 6; background: color-mix(in oklch, var(--card) 90%, transparent);
+    border: 1px solid var(--border); border-radius: 10px; backdrop-filter: blur(8px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18); }
+  #toolbar { top: 12px; left: 12px; display: flex; align-items: center; gap: 16px; padding: 8px 14px; font-size: 11px; }
+  #toolbar .logo { font-size: 12px; font-weight: 700; letter-spacing: 2.5px; color: var(--info); }
+  #toolbar .logo span { color: var(--muted-fg); font-weight: 400; letter-spacing: 1.5px; }
+  #toolbar .sep { width: 1px; height: 16px; background: var(--border); }
+  #toolbar .readout { color: var(--muted-fg); white-space: nowrap; }
+  #toolbar .readout b { color: var(--fg); font-weight: 600; }
+  #conn { letter-spacing: 1px; color: var(--muted-fg); white-space: nowrap; }
+  #conn.live { color: var(--info); }
+
+  #layouts { top: 60px; left: 12px; display: flex; gap: 2px; padding: 4px; }
+  #layouts .lbl { align-self: center; font-size: 8px; letter-spacing: 1.5px; font-weight: 700;
+    color: var(--muted-fg); padding: 0 6px 0 2px; }
+  #layouts button { appearance: none; font: inherit; font-size: 10px; letter-spacing: 0.5px;
+    padding: 4px 9px; cursor: pointer; color: var(--muted-fg); background: transparent;
+    border: 1px solid transparent; border-radius: 7px; }
+  #layouts button:hover { background: color-mix(in oklch, var(--muted-fg) 14%, transparent); color: var(--fg); }
+  #layouts button.on { color: var(--info); background: color-mix(in oklch, var(--info) 14%, transparent);
+    border-color: color-mix(in oklch, var(--info) 40%, var(--border)); }
+
+  #controls { bottom: 16px; left: 16px; display: flex; flex-direction: column; padding: 4px; gap: 2px; }
+  #controls button { appearance: none; width: 30px; height: 28px; font: inherit; font-size: 15px; line-height: 1;
+    cursor: pointer; color: var(--fg); background: transparent; border: 0; border-radius: 7px; }
+  #controls button:hover { background: color-mix(in oklch, var(--muted-fg) 16%, transparent); }
+  #controls .fit { font-size: 11px; letter-spacing: 1px; }
+
+  #legend { position: fixed; bottom: 18px; left: 62px; z-index: 6; display: flex; gap: 16px;
+    flex-wrap: wrap; max-width: 40vw;
+    font-size: 10px; letter-spacing: 1px; color: var(--muted-fg); user-select: none; }
+  #legend .k { display: inline-flex; align-items: center; gap: 6px; }
+  #legend .sw { width: 18px; height: 10px; border: 1px solid var(--border); border-radius: 3px; }
+  #legend .sw.mod { background: var(--card); border-left: 3px solid var(--info); }
+  #legend .sw.top { border-radius: 999px; border-color: color-mix(in oklch, var(--info) 45%, var(--border)); }
+
+  #help { position: fixed; bottom: 18px; right: 16px; z-index: 6; color: var(--muted-fg);
+    font-size: 10px; letter-spacing: 1px; user-select: none; opacity: 0.8;
+    max-width: 52vw; text-align: right; line-height: 1.5; }
+
+  /* topics table — sortable list of every topic + live rate; toggle with T */
+  #topics { top: 106px; left: 12px; width: 272px; z-index: 6; padding: 0; bottom: 120px; max-height: calc(100vh - 226px); display: flex; flex-direction: column; }
+  #topics.hide { display: none; }
+  #topics.collapsed { bottom: auto; max-height: none; }
+  #topics.collapsed .body, #topics.collapsed .thead { display: none; }
+  #topics .thead { display: flex; align-items: center; gap: 7px; padding: 3px 12px 4px; font-size: 8.5px;
+    letter-spacing: 1px; color: var(--muted-fg); border-bottom: 1px solid var(--border); }
+  #topics .thead .sp { flex: none; width: 6px; }
+  #topics .thead .n { flex: 1 1 auto; min-width: 0; }
+  #topics .thead .hz { flex: none; width: 62px; text-align: right; }
+  #topics .thead .tp { flex: none; width: 62px; text-align: right; }
+  #topics .thead .sortkey { cursor: pointer; user-select: none; }
+  #topics .thead .sortkey:hover { color: var(--fg); }
+  #topics .thead .sortkey.active { color: var(--info); font-weight: 700; }
+  #topics .thead .sortkey.active::after { content: " ▾"; font-size: 7px; }
+  #topics.collapsed h2 { border-bottom: none; }
+  #topics.collapsed .caret { transform: rotate(-90deg); }
+  #topics h2 { margin: 0; font-size: 9px; font-weight: 600; letter-spacing: 2px; color: var(--muted-fg);
+    padding: 9px 12px 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; flex: none; cursor: pointer; user-select: none; }
+  #topics h2:hover { color: var(--fg); }
+  #topics h2 .thd { display: inline-flex; align-items: center; gap: 6px; color: var(--muted-fg); }
+  #topics h2 .caret { display: inline-block; font-size: 8px; transition: transform .12s; color: var(--muted-fg); }
+  #topics h2 #topics-count { color: var(--fg); }
+  #topics .body { padding: 5px 8px 8px; overflow-y: auto; scrollbar-width: none; -ms-overflow-style: none; }
+  #topics .body::-webkit-scrollbar { width: 0; height: 0; display: none; }
+  #topics .trow { display: flex; align-items: baseline; gap: 7px; font-size: 11px; padding: 2px 4px; border-radius: 5px; }
+  #topics .trow.live { background: color-mix(in oklch, var(--info) 8%, transparent); }
+  #topics .trow .dot { flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--accent, var(--muted-fg)); align-self: center; }
+  #topics .trow .n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  #topics .trow .hz { flex: none; width: 62px; text-align: right; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+  #topics .trow .hz b { color: var(--info); font-weight: 600; }
+  #topics .trow .hz .ago { font-size: 9.5px; letter-spacing: -.2px; }
+  #topics .trow .tp { flex: none; width: 62px; text-align: right; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+  #topics .trow.idle .hz, #topics .trow.idle .tp { opacity: .5; }
+  #topics .empty { color: var(--muted-fg); font-size: 11px; padding: 4px; }
+
+  /* dtop (per-worker CPU/RAM) kept as an opt-in side panel; toggle with D */
+  #dtop { top: 12px; right: 12px; width: 264px; z-index: 6; padding: 0; display: none; }
+  #dtop.show { display: block; }
+  #dtop h2 { margin: 0; font-size: 9px; font-weight: 600; letter-spacing: 2px; color: var(--muted-fg);
+    padding: 9px 12px 8px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; cursor: pointer; user-select: none; }
+  #dtop h2:hover { color: var(--fg); }
+  #dtop h2 .thd { display: inline-flex; align-items: center; gap: 6px; }
+  #dtop h2 .caret { display: inline-block; font-size: 8px; transition: transform .12s; }
+  #dtop.collapsed .body { display: none; }
+  #dtop.collapsed h2 { border-bottom: none; }
+  #dtop.collapsed .caret { transform: rotate(-90deg); }
+  #dtop .body { padding: 6px 12px 9px; }
+  #dtop .row { display: flex; align-items: baseline; gap: 8px; font-size: 11px; padding: 2px 0; }
+  #dtop .row .n { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #dtop .row .c { flex: none; color: var(--muted-fg); } #dtop .row .c b { color: var(--info); font-weight: 600; }
+  #dtop .row { cursor: default; border-radius: 5px; margin: 0 -5px; padding-left: 5px; padding-right: 5px; }
+  #dtop .row:hover { background: color-mix(in oklch, var(--fg) 8%, transparent); }
+  #dtop .empty { color: var(--muted-fg); font-size: 11px; padding: 4px 0; }
+  /* full per-worker detail on hover (mirrors the `dimos dtop` TUI) */
+  #dtop-tip { position: fixed; z-index: 30; width: 250px; pointer-events: none; opacity: 0;
+    transition: opacity .1s; background: color-mix(in oklch, var(--card) 96%, transparent);
+    border: 1px solid var(--border); border-radius: 8px; padding: 9px 11px;
+    box-shadow: 0 8px 28px rgba(0,0,0,.4); font-size: 11px; color: var(--fg); }
+  #dtop-tip.show { opacity: 1; }
+  #dtop-tip .th { display: flex; align-items: baseline; gap: 6px; margin-bottom: 5px; }
+  #dtop-tip .th .role { font-weight: 700; letter-spacing: .3px; }
+  #dtop-tip .th .pid { margin-left: auto; color: var(--muted-fg); font-size: 9px; font-variant-numeric: tabular-nums; }
+  #dtop-tip .mods { color: var(--muted-fg); font-size: 10px; margin-bottom: 6px; word-break: break-word; }
+  #dtop-tip .kv { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+  #dtop-tip .kv span { display: inline-flex; gap: 4px; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+  #dtop-tip .kv span b { color: var(--fg); font-weight: 600; }
+  #dtop-tip .ch { margin-top: 6px; border-top: 1px solid var(--border); padding-top: 5px; }
+  #dtop-tip .ch .chd { color: var(--muted-fg); font-size: 9px; letter-spacing: 1px; margin-bottom: 3px; }
+  #dtop-tip .ch .crow { display: flex; gap: 6px; font-size: 10px; padding: 1px 0; }
+  #dtop-tip .ch .crow .cn { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg); }
+  #dtop-tip .ch .crow .cp { flex: none; color: var(--muted-fg); font-variant-numeric: tabular-nums; }
+
+  /* module card — launcher-style detail popover on hover/click */
+  #card { width: 300px; max-height: 74vh; overflow-y: auto; padding: 0; display: none;
+    top: 0; left: 0; z-index: 8;
+    /* translucent by default (hover preview) so it doesn't hide the graph */
+    background: color-mix(in oklch, var(--card) 30%, transparent); backdrop-filter: blur(3px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
+  #card.show { display: block; }
+  /* clicked → pinned: fully opaque + persistent so it reads as a real panel */
+  #card.pinned { background: var(--card); backdrop-filter: blur(8px);
+    box-shadow: 0 6px 22px rgba(0,0,0,0.28); border-color: color-mix(in oklch, var(--info) 40%, var(--border)); }
+  #card .chd { display: flex; align-items: center; gap: 8px; padding: 10px 12px 8px;
+    border-bottom: 1px solid var(--border); position: sticky; top: 0;
+    background: color-mix(in oklch, var(--card) 30%, transparent); backdrop-filter: blur(3px); }
+  #card.pinned .chd { background: color-mix(in oklch, var(--card) 94%, transparent); backdrop-filter: blur(8px); }
+  #card .chd .badge { font-size: 8px; letter-spacing: 1.5px; font-weight: 700; color: var(--info);
+    border: 1px solid color-mix(in oklch, var(--info) 45%, var(--border)); border-radius: 5px; padding: 2px 5px; }
+  #card .chd .nm { font-size: 13px; font-weight: 600; color: var(--fg); }
+  #card .chd .pin { margin-left: auto; font-size: 13px; color: var(--muted-fg); }
+  #card.pinned .chd .pin { color: var(--info); }
+  #card .cbody { padding: 9px 12px 12px; }
+  #card .doc { color: var(--muted-fg); font-size: 11px; line-height: 1.45; white-space: pre-wrap;
+    max-height: 7.5em; overflow: hidden; margin-bottom: 4px; }
+  #card .sec { margin-top: 9px; }
+  #card .sec > .lbl { font-size: 8px; letter-spacing: 1.5px; font-weight: 700; color: var(--muted-fg);
+    display: block; margin-bottom: 5px; }
+  #card .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  #card .chip { font-size: 10px; padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+    border: 1px solid color-mix(in oklch, var(--accent, var(--info)) 50%, var(--border));
+    color: color-mix(in oklch, var(--fg) 68%, var(--muted-fg)); }
+  #card .chip .ty { color: var(--accent, var(--info)); }
+  #card .chip .rt { color: var(--info); font-weight: 600; margin-left: 3px; }
+  #card .chip .rt.idle { color: var(--muted-fg); font-weight: 400; }
+  #card .chip .rmp { color: var(--muted-fg); }
+  #card .chip.out { --accent: var(--warn); } #card .chip.in { --accent: var(--ok); }
+  #card .mrow { font-size: 10px; color: color-mix(in oklch, var(--fg) 60%, var(--muted-fg));
+    padding: 1px 0; font-family: ui-monospace, SFMono-Regular, monospace; }
+  #card .mrow .ret { color: var(--muted-fg); }
+  #card .none { color: var(--muted-fg); font-size: 10px; }
+
+  #hint { position: fixed; inset: 0; z-index: 4; display: flex; align-items: center; justify-content: center;
+    pointer-events: none; color: var(--muted-fg); font-size: 13px; letter-spacing: .5px; }
+  #hint.hide { display: none; }
+
+  /* narrow / phone widths: keep the top bars to single scrollable rows (so their
+     heights stay predictable) and drop the topics table into a full-width bottom
+     sheet instead of a fixed side panel that would overlap the graph. */
+  @media (max-width: 1040px) {
+    #help { font-size: 9px; letter-spacing: 0.5px; max-width: 46vw; }
+    #legend { gap: 10px 14px; max-width: 44vw; }
+  }
+  /* below ~900px the (left) toolbar grows wide enough to collide with the
+     top-right dtop panel — drop dtop below the toolbar + layout-picker rows. */
+  @media (max-width: 900px) {
+    #dtop { top: 108px; }
+  }
+  @media (max-width: 760px) {
+    #toolbar { max-width: calc(100vw - 24px); overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    #toolbar > * { flex: none; white-space: nowrap; }
+    #layouts { max-width: calc(100vw - 24px); overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    #topics { top: auto; bottom: 12px; left: 12px; right: 12px; width: auto; max-height: 42vh; }
+    #dtop { width: calc(100vw - 24px); max-width: 264px; }
+    #help, #legend { display: none; }
+  }
+  @media (max-width: 460px) {
+    #toolbar { gap: 10px; padding: 7px 11px; font-size: 10px; }
+    #toolbar .logo span { display: none; }
+    #topics { max-height: 46vh; }
+  }
+</style>
+</head>
+<body class="science dark">
+
+<div id="flow">
+  <div id="viewport">
+    <svg id="edges"><defs></defs></svg>
+  </div>
+</div>
+
+<div id="hint">waiting for a running stack — start a blueprint to see modules light up</div>
+
+<div class="bar" id="toolbar">
+  <span class="logo">MODULE FLOW <span>/ LCM · ZENOH</span></span>
+  <span class="sep"></span>
+  <span class="readout" id="r-graph"><b>0</b> modules · <b>0</b> topics</span>
+  <span class="readout" id="r-rate"><b>0.0</b> Hz · <b>0 B</b>/s</span>
+  <span class="sep"></span>
+  <span id="conn">○ offline</span>
+</div>
+
+<div class="bar" id="layouts"></div>
+
+<div class="bar" id="controls">
+  <button id="zin"  title="zoom in">+</button>
+  <button id="zout" title="zoom out">−</button>
+  <button class="fit" id="fit" title="fit view">FIT</button>
+</div>
+
+<div id="legend">
+  <span class="k"><span class="sw mod"></span> module</span>
+  <span class="k"><span class="sw top"></span> topic</span>
+</div>
+
+<div class="bar" id="topics">
+  <h2 id="topics-head"><span class="thd"><span class="caret">▾</span> TOPICS · RATE</span> <span id="topics-count">0</span></h2>
+  <div class="thead" id="topics-sort" title="click a column to sort">
+    <span class="sp"></span><span class="n">TOPIC</span>
+    <span class="hz sortkey" data-sort="hz">Hz</span>
+    <span class="tp sortkey" data-sort="bps">bit/s</span>
+  </div>
+  <div class="body" id="topics-body"></div>
+</div>
+
+<div class="bar show" id="dtop">
+  <h2 id="dtop-head"><span class="thd"><span class="caret">▾</span> WORKERS · CPU/RAM</span> <span id="dtop-status">○ no stream</span></h2>
+  <div class="body" id="dtop-body"></div>
+</div>
+<div id="dtop-tip">
+</div>
+
+<div class="bar" id="card"></div>
+
+<div id="help">DRAG pan · SCROLL zoom · HOVER module for card · CLICK pin · G cycle layout · T topics · D workers</div>
+
+<script type="module">
+import { DimAppFrontend } from "https://esm.sh/gh/jeff-hykin/dim-app@v0.3.0/frontend.js";
+"use strict";
+
+// ─────────────────────────────────────────────────────────── color mapping ──
+// Node accent colors are chosen as *theme variable names* (e.g. "--warn") and
+// applied inline as `--accent: var(--warn)`, so the browser resolves them live
+// and the whole graph re-themes on light/dark flips with zero JS.
+const TYPE_VARS = {
+  Image: "--warn", CompressedImage: "--warn", CameraInfo: "--warn",
+  PointCloud2: "--violet", LaserScan: "--violet",
+  OccupancyGrid: "--cat-1", Path: "--cat-1",
+  Odometry: "--info", PoseStamped: "--info", Twist: "--info",
+  TFMessage: "--ok", Bool: "--cat-2", String: "--cat-2",
+};
+const PKG_VARS = {
+  sensor_msgs: "--warn", geometry_msgs: "--info", nav_msgs: "--cat-1",
+  tf2_msgs: "--ok", vision_msgs: "--violet", std_msgs: "--cat-2",
+};
+const PALETTE = ["--info", "--warn", "--cat-1", "--violet", "--ok", "--cat-2", "--cat-3", "--cat-4"];
+
+// Split a channel/key into a display base and its message type. LCM channels
+// carry the type after "#" ("/pose#geometry_msgs.PoseStamped"); Zenoh keys carry
+// it as the final "/" segment ("dimos/cmd_vel/geometry_msgs.Twist").
+function channelType(channel, transport) {
+  if (channel.includes("#")) {
+    const parts = channel.split("#");
+    return { base: parts[0], msgType: parts[1] || "" };
+  }
+  if ((transport === "zenoh" || channel.includes("/")) && channel.includes("/")) {
+    const segs = channel.split("/");
+    const last = segs[segs.length - 1];
+    if (last.includes(".") && segs.length > 1) return { base: segs.slice(0, -1).join("/"), msgType: last };
+  }
+  return { base: channel, msgType: "" };
+}
+function accentVar(channel, transport) {
+  const { msgType } = channelType(channel, transport);
+  if (msgType) {
+    const msg = msgType.split(".").pop();
+    if (TYPE_VARS[msg]) return TYPE_VARS[msg];
+    const pkg = msgType.split(".")[0];
+    if (PKG_VARS[pkg]) return PKG_VARS[pkg];
+  }
+  if (channel.startsWith("/rpc") || channel.startsWith("rpc")) return "--cat-1";
+  const hash = [...channel].reduce((a, c) => a + c.charCodeAt(0), 0);
+  return PALETTE[hash % PALETTE.length];
+}
+
+// ────────────────────────────────────────────────────────────── graph model ─
+const nodes = new Map();          // id -> node
+const edges = [];                 // { from, to, channel, directed, el, lab, active }
+const edgeIndex = new Map();
+const routes = new Map();         // topic -> { pubs:Set<moduleId>, subs:Set<moduleId> }
+let dirty = false;                // topology grew → rebuild DOM + relayout
+
+function ensureNode(id, kind, label, transport) {
+  let n = nodes.get(id);
+  if (!n) {
+    n = {
+      id, kind, label,
+      x: 0, y: 0, w: kind === "module" ? 160 : 120, h: kind === "module" ? 40 : 34,
+      vx: 0, vy: 0, placed: false, fixed: false, open: false,
+      transport: transport || "", msgType: channelType(id, transport).msgType,
+      accent: kind === "module" ? "--info" : accentVar(id, transport),
+      el: null, active: 0,
+    };
+    nodes.set(id, n);
+    dirty = true;
+  } else if (transport && !n.transport) {
+    n.transport = transport;
+    n.accent = n.kind === "module" ? "--info" : accentVar(id, transport);
+  }
+  return n;
+}
+
+function addEdge(fromId, toId, channel, directed, declared) {
+  const key = fromId + "|" + toId;
+  let e = edgeIndex.get(key);
+  if (!e) { e = { from: fromId, to: toId, channel, directed, declared: declared || null, el: null, lab: null, active: 0 }; edges.push(e); edgeIndex.set(key, e); dirty = true; }
+  return e;
+}
+
+// Blueprint stream types come as bare or dotted names ("PointCloud2",
+// "nav_msgs.Odometry"); map them to a theme accent var the same way topic
+// channels are colored.
+function accentForType(type, topicName) {
+  const msg = (type || "").split(".").pop();
+  if (TYPE_VARS[msg]) return TYPE_VARS[msg];
+  const pkg = (type || "").includes(".") ? type.split(".")[0] : "";
+  if (PKG_VARS[pkg]) return PKG_VARS[pkg];
+  const key = topicName || type || "";
+  const hash = [...key].reduce((a, c) => a + c.charCodeAt(0), 0);
+  return PALETTE[hash % PALETTE.length];
+}
+
+// Normalize a live spy channel or a blueprint topic name to a common key so the
+// two can be matched: "/camera_info#sensor_msgs.CameraInfo" and "dimos/cmd_vel/
+// geometry_msgs.Twist" both reduce to their last bare segment ("camera_info").
+function normBase(s) {
+  let b = channelType(s, "").base.replace(/^\/+/, "");
+  const seg = b.split("/");
+  return seg[seg.length - 1];
+}
+const topicBase = new Map();       // normBase(name) -> [topic node ids]
+const moduleInfo = new Map();      // module node id -> blueprint card payload
+
+let currentBlueprint = "";
+function resetGraph() {
+  for (const n of nodes.values()) n.el?.remove();
+  for (const e of edges) { e.el?.remove(); e.lab?.remove(); }
+  nodes.clear(); edges.length = 0; edgeIndex.clear(); routes.clear();
+  topicBase.clear(); moduleInfo.clear();
+  seedCount = 0; settledOnce = false; heat = 0;
+}
+
+// Build the graph from the active blueprint: modules with typed inputs/outputs +
+// docstrings, joined into topics by stream name. A module's `outputs` publish a
+// topic; its `inputs` subscribe. Each publisher gets its OWN topic node, so two
+// modules publishing the same name make two duplicate topic nodes; a subscriber
+// fans in from every same-named duplicate. The spy animates these edges after.
+function applyGraph(g) {
+  if (g.blueprint !== currentBlueprint) { resetGraph(); currentBlueprint = g.blueprint; }
+  if (g.unknown) {
+    hintEl.textContent = `${g.blueprint} is running — add its dimos dir to the desktop to see modules`;
+  } else if (!g.blueprint) {
+    hintEl.textContent = "waiting for a running stack — start a blueprint to see modules light up";
+  }
+  for (const [mid, info] of Object.entries(g.modules || {})) {
+    const nodeId = "m:" + mid;
+    ensureNode(nodeId, "module", info.label || mid);
+    moduleInfo.set(nodeId, info);
+  }
+  // Pass 1: bucket publishers and subscribers by topic name.
+  const pubsByTopic = new Map();   // name -> [{ modId, type }]
+  const subsByTopic = new Map();   // name -> [modId]
+  for (const t of g.edges || []) {
+    if (!t.topic || t.topic === "None") continue;
+    const modId = "m:" + t.module;
+    if (!nodes.has(modId)) ensureNode(modId, "module", g.modules?.[t.module]?.label || t.module);
+    if (t.direction === "in") {
+      (subsByTopic.get(t.topic) || subsByTopic.set(t.topic, []).get(t.topic)).push({ modId, declared: t.declared });
+    } else {
+      (pubsByTopic.get(t.topic) || pubsByTopic.set(t.topic, []).get(t.topic)).push({ modId, type: t.type, declared: t.declared });
+    }
+  }
+  // Pass 2: one topic node per publisher instance; each subscriber connects to
+  // every same-named instance. A subscribed name with no publisher still gets a
+  // single node so the subscription stays visible.
+  for (const name of new Set([...pubsByTopic.keys(), ...subsByTopic.keys()])) {
+    const pubs = pubsByTopic.get(name) || [];
+    const subs = subsByTopic.get(name) || [];
+    const instances = pubs.length ? pubs : [{ modId: null, type: "" }];
+    instances.forEach((pub, i) => {
+      const topicId = pubs.length ? `${name}#${pub.modId}#${i}` : name;
+      const hub = ensureNode(topicId, "topic", name);
+      hub.msgType = (pub.type || "").split(".").pop();
+      hub.accent = accentForType(pub.type, name);
+      const route = { pubs: new Set(), subs: new Set() };
+      if (pub.modId) { route.pubs.add(pub.modId); addEdge(pub.modId, topicId, name, true, pub.declared); }
+      for (const sub of subs) { route.subs.add(sub.modId); addEdge(topicId, sub.modId, name, true, sub.declared); }
+      routes.set(topicId, route);
+      (topicBase.get(normBase(name)) || topicBase.set(normBase(name), []).get(normBase(name))).push(topicId);
+    });
+  }
+  if (dirty) { buildDom(); dirty = false; applyGraphLayout(); }
+}
+
+// ─────────────────────────────────────────── force-directed layout ──
+// A robotics graph is a mesh of pub/sub relationships, so we lay it out as an
+// organic web: every node repels every other (Coulomb), each edge pulls its two
+// endpoints toward an ideal length (Hooke), and a gentle pull toward the origin
+// keeps the whole thing centered. The sim runs in the animate loop but cools to
+// a resting "heat" of 0, so it settles yet re-warms whenever the user drags a
+// node or the topology grows. Positions live on n.x/n.y (world units, node
+// centers); the HTML nodes and SVG edges both render straight from those.
+const REPULSION = 62000;   // coulomb strength (px² · accel)
+const SPRING_K = 0.045;    // hooke stiffness along edges
+const SPRING_GAP = 96;     // ideal edge length beyond the two node radii
+const CENTER_K = 0.012;    // pull toward origin
+const DAMPING = 0.86;      // velocity retention per tick
+const MAX_STEP = 34;       // clamp per-tick displacement (px)
+let heat = 0;              // sim "temperature"; >0.04 means keep integrating
+let seedCount = 0;
+let settledOnce = false;
+let layoutId = "hierarchy";    // active LAYOUTS[].id (default)
+let simFrozen = false;     // true while a graphviz layout holds its own shape
+
+function seed(n) {
+  if (n.placed) return;
+  const ang = seedCount * 2.399963;                 // golden angle → even spiral
+  const rad = 30 + 26 * Math.sqrt(seedCount + 1);
+  n.x = Math.cos(ang) * rad;
+  n.y = Math.sin(ang) * rad;
+  n.vx = 0; n.vy = 0; n.placed = true; seedCount++;
+}
+function reheat(amount = 1) { if (!simFrozen) heat = Math.max(heat, amount); }
+
+function stepForces() {
+  const ns = [...nodes.values()];
+  for (const n of ns) { n.fx = 0; n.fy = 0; }
+  // all-pairs repulsion with a collision cushion (nodes have real box sizes)
+  for (let i = 0; i < ns.length; i++) {
+    const a = ns[i];
+    for (let j = i + 1; j < ns.length; j++) {
+      const b = ns[j];
+      let dx = a.x - b.x, dy = a.y - b.y;
+      let d2 = dx * dx + dy * dy;
+      if (d2 < 1) { dx = Math.random() - 0.5; dy = Math.random() - 0.5; d2 = dx * dx + dy * dy + 0.01; }
+      const dist = Math.sqrt(d2);
+      const ux = dx / dist, uy = dy / dist;
+      let f = REPULSION / d2;
+      const minDist = a.r + b.r + 22;
+      if (dist < minDist) f += (minDist - dist) * 1.1;   // firm push out of overlap
+      a.fx += ux * f; a.fy += uy * f;
+      b.fx -= ux * f; b.fy -= uy * f;
+    }
+  }
+  // spring attraction along every edge
+  for (const e of edges) {
+    const a = nodes.get(e.from), b = nodes.get(e.to);
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const dist = Math.hypot(dx, dy) || 1;
+    const ideal = SPRING_GAP + a.r + b.r;
+    const f = SPRING_K * (dist - ideal);
+    const ux = dx / dist, uy = dy / dist;
+    a.fx += ux * f; a.fy += uy * f;
+    b.fx -= ux * f; b.fy -= uy * f;
+  }
+  // centering + integrate (fixed nodes are pinned by the dragger)
+  for (const n of ns) {
+    if (n.fixed) { n.vx = 0; n.vy = 0; continue; }
+    n.fx += -n.x * CENTER_K;
+    n.fy += -n.y * CENTER_K;
+    n.vx = (n.vx + n.fx) * DAMPING;
+    n.vy = (n.vy + n.fy) * DAMPING;
+    let sx = n.vx * heat, sy = n.vy * heat;
+    const step = Math.hypot(sx, sy);
+    if (step > MAX_STEP) { sx = sx / step * MAX_STEP; sy = sy / step * MAX_STEP; }
+    n.x += sx; n.y += sy;
+  }
+}
+
+// ───────────────────────────────────────────────────── graph layouts ──
+// Five distinct shapes. #1 "Force" is the organic force-directed web (the sim
+// runs live). The other four are computed by Graphviz (compiled to WASM): each
+// engine imposes its own rigid shape and routes every edge as a predictable
+// spline, so the graph snaps into a stable, readable form — very different from
+// the loose web. While a Graphviz layout is showing, the sim is frozen.
+const LAYOUTS = [
+  { id: "hierarchy", label: "Hierarchy", engine: "dot" },   // layered L→R DAG (default)
+  { id: "organic", label: "Organic", engine: "neato" },  // stress / spring model
+  { id: "force", label: "Force", engine: null },        // live force-directed web
+  { id: "radial", label: "Radial", engine: "twopi" },   // radial tree
+  { id: "circular", label: "Circular", engine: "circo" },  // nodes on one big cycle
+];
+
+// Graphviz is loaded lazily from esm.sh the first time a non-force layout runs.
+let graphvizPromise = null;
+function loadGraphviz() {
+  if (!graphvizPromise) {
+    graphvizPromise = import("https://esm.sh/@hpcc-js/wasm-graphviz@1.7.0")
+      .then((mod) => mod.Graphviz.load());
+  }
+  return graphvizPromise;
+}
+
+const PT_PER_IN = 72;   // graphviz sizes are inches; our world unit is 1pt = 1px
+// Build DOT from the live graph. Each node box carries its measured pixel size
+// (as inches, fixedsize) so graphviz reserves exactly our footprint; nodes are
+// keyed by array index (n0,n1,…) to dodge id-quoting issues. Returns the emitted
+// edge list so the parsed splines can be matched back by input order.
+function buildDot(engine) {
+  const arr = [...nodes.values()];
+  const idx = new Map(arr.map((n, i) => [n.id, i]));
+  const lines = ["digraph {"];
+  lines.push(engine === "dot"
+    ? "  graph [rankdir=LR, nodesep=0.45, ranksep=1.1, splines=true];"
+    : "  graph [overlap=false, sep=\"+20\", splines=true];");
+  lines.push("  node [fixedsize=true, shape=box];");
+  arr.forEach((n, i) => {
+    lines.push(`  n${i} [width=${(n.w / PT_PER_IN).toFixed(3)}, height=${(n.h / PT_PER_IN).toFixed(3)}];`);
+  });
+  const emitted = [];
+  for (const e of edges) {
+    const a = idx.get(e.from), b = idx.get(e.to);
+    if (a == null || b == null) continue;
+    lines.push(`  n${a} -> n${b};`);
+    emitted.push(e);
+  }
+  lines.push("}");
+  return { dot: lines.join("\n"), arr, emitted };
+}
+// Graphviz uses points with y increasing upward; we use pixels with y down and a
+// centered origin. Flip y about the bounding box and recenter on its middle,
+// then read node centers and each edge's bspline control points into world space.
+function applyEnginePositions(json, arr, emitted) {
+  const bb = (json.bb || "0,0,0,0").split(",").map(Number);
+  const boxH = bb[3], cx = bb[2] / 2, cy = bb[3] / 2;
+  const toWorld = (x, y) => ({ x: x - cx, y: (boxH - y) - cy });
+  const gvidName = new Map((json.objects || []).map((o) => [o._gvid, o.name]));
+  for (const o of json.objects || []) {
+    const m = /^n(\d+)$/.exec(o.name || "");
+    if (!m || !o.pos) continue;
+    const [px, py] = o.pos.split(",").map(Number);
+    const p = toWorld(px, py);
+    const n = arr[+m[1]];
+    n.x = p.x; n.y = p.y; n.vx = 0; n.vy = 0; n.fixed = true;
+  }
+  for (const e of edges) e.spline = null;
+  // graphviz preserves input order, but match on (tail,head) names to be safe.
+  const byPair = new Map();
+  emitted.forEach((e, i) => {
+    const key = `n${arr.indexOf(nodes.get(e.from))}>n${arr.indexOf(nodes.get(e.to))}`;
+    (byPair.get(key) || byPair.set(key, []).get(key)).push(e);
+  });
+  for (const ge of json.edges || []) {
+    const key = `${gvidName.get(ge.tail)}>${gvidName.get(ge.head)}`;
+    const queue = byPair.get(key);
+    const e = queue && queue.shift();
+    if (!e) continue;
+    const draw = (ge._draw_ || []).find((d) => d.op === "b" || d.op === "B");
+    if (draw && Array.isArray(draw.points)) {
+      e.spline = draw.points.map(([x, y]) => toWorld(x, y));
+    }
+  }
+}
+// golden-spiral seed for the force sim (its natural default).
+function layoutSpiral() {
+  let i = 0;
+  for (const n of nodes.values()) {
+    const ang = i * 2.399963;
+    const rad = 30 + 26 * Math.sqrt(i + 1);
+    n.x = Math.cos(ang) * rad; n.y = Math.sin(ang) * rad;
+    i++;
+  }
+}
+// Relax the force sim (synchronous pre-settle so nodes don't visibly fly), frame.
+function relaxAndFrame() {
+  for (const n of nodes.values()) { n.vx = 0; n.vy = 0; }
+  heat = 1;
+  for (let i = 0; i < 320; i++) stepForces();
+  heat = 0.1;
+  positionAll();
+  fitView();
+}
+// First graph → settle the force web; later growth re-warms (force) or recomputes
+// the frozen engine layout so new nodes get placed without jerking the framing.
+function applyGraphLayout() {
+  if (!settledOnce && nodes.size) {
+    settledOnce = true;
+    setLayout(layoutId);
+  } else if (simFrozen) {
+    setLayout(layoutId);
+  } else {
+    reheat(1);
+  }
+}
+// Explicit switch from a control/keypress. Force = seed spiral + relax the sim;
+// a graphviz engine = compute the DOT layout, freeze the sim, snap to its shape.
+async function setLayout(id) {
+  const L = LAYOUTS.find((l) => l.id === id);
+  if (!L) return;
+  layoutId = id;
+  updateLayoutButtons();
+  for (const n of nodes.values()) n.fixed = false;
+  if (!L.engine) {
+    simFrozen = false;
+    for (const e of edges) e.spline = null;
+    layoutSpiral();
+    relaxAndFrame();
+    return;
+  }
+  try {
+    const gv = await loadGraphviz();
+    const { dot, arr, emitted } = buildDot(L.engine);
+    const json = JSON.parse(gv.layout(dot, "json", L.engine));
+    applyEnginePositions(json, arr, emitted);
+    simFrozen = true;
+    heat = 0;
+    positionAll();
+    fitView();
+  } catch (err) {
+    console.error(`layout ${id} failed:`, err);
+    simFrozen = false;
+    layoutSpiral();
+    relaxAndFrame();
+  }
+}
+function updateLayoutButtons() {
+  for (const b of document.querySelectorAll("#layouts button")) {
+    b.classList.toggle("on", b.dataset.layout === layoutId);
+  }
+}
+
+// ───────────────────────────────────────────────────────────────── the DOM ──
+const flow = document.getElementById("flow");
+const viewport = document.getElementById("viewport");
+const svg = document.getElementById("edges");
+const defs = svg.querySelector("defs");
+const hintEl = document.getElementById("hint");
+let view = { x: 0, y: 0, k: 1 };   // pan (x,y) + zoom (k)
+
+// markerUnits=strokeWidth → arrowheads are sized as a multiple of each edge's
+// stroke-width, so they scale WITH the graph/zoom exactly like the lines do (no
+// per-view resizing). This keeps them proportional to the lines at every zoom and
+// on every screen — on a wide monitor the lines render thicker, so the heads grow
+// with them and stay visible. refX/refY are in the viewBox (0–10) coordinate space.
+const ARROW_STROKE_MULT = 6, ARROWMID_STROKE_MULT = 6;
+defs.innerHTML = `
+  <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="${ARROW_STROKE_MULT}" markerHeight="${ARROW_STROKE_MULT}" markerUnits="strokeWidth" orient="auto-start-reverse">
+    <path d="M0 0.5 L10 5 L0 9.5 z" fill="context-stroke"/>
+  </marker>
+  <marker id="arrowmid" viewBox="0 0 10 10" refX="5" refY="5" markerWidth="${ARROWMID_STROKE_MULT}" markerHeight="${ARROWMID_STROKE_MULT}" markerUnits="strokeWidth" orient="auto">
+    <path d="M0 0.5 L10 5 L0 9.5 z" fill="context-stroke"/>
+  </marker>`;
+function syncMarkerScale() {}  // no-op: markers now scale via markerUnits=strokeWidth
+
+function isOrphan(topicId) {
+  const r = routes.get(topicId);
+  return !!(r && r.pubs.size > 0 && r.subs.size === 0);
+}
+
+function buildDom() {
+  for (const n of nodes.values()) {
+    if (n.el) continue;
+    const el = document.createElement("div");
+    el.className = "node " + n.kind;
+    el.style.setProperty("--accent", `var(${n.accent})`);
+    el.dataset.id = n.id;
+    if (n.kind === "module") {
+      el.innerHTML =
+        `<div class="head"><span class="kind">MOD</span>` +
+        `<span class="name"></span><span class="chev">▶</span></div>` +
+        `<div class="body"></div>` +
+        `<span class="handle l"></span><span class="handle r"></span>`;
+      el.querySelector(".name").textContent = n.label;
+    } else {
+      if (isOrphan(n.id)) el.classList.add("orphan");
+      if (n.dynamic) el.classList.add("recent");
+      el.innerHTML =
+        `<span class="name"></span><span class="rate"></span><span class="type"></span>` +
+        `<span class="handle l"></span><span class="handle r"></span>`;
+      el.querySelector(".name").textContent = n.label;
+      el.querySelector(".type").textContent = n.msgType || (n.transport || "").toUpperCase() || "";
+    }
+    viewport.appendChild(el);
+    n.el = el;
+    n.w = el.offsetWidth; n.h = el.offsetHeight;  // layout px == world units
+    n.r = 0.5 * Math.hypot(n.w, n.h);             // repulsion/collision radius
+    seed(n);
+  }
+  for (const e of edges) {
+    if (e.el) continue;
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("stroke", "var(--border)");
+    p.setAttribute("stroke-width", "1.5");
+    if (e.directed) { p.setAttribute("marker-mid", "url(#arrowmid)"); p.setAttribute("marker-end", "url(#arrow)"); }
+    svg.appendChild(p);
+    e.el = p;
+    if (e.declared) {
+      // the rename reads along the flow: `twist_command ↦` leaving a module,
+      // `↦ twist_command` arriving at one (the topic node shows the wire name)
+      const lab = document.createElement("div");
+      lab.className = "elabel";
+      lab.textContent = nodes.get(e.from)?.kind === "module" ? `${e.declared} ↦` : `↦ ${e.declared}`;
+      viewport.appendChild(lab);
+      e.lab = lab;
+    }
+  }
+  positionAll();
+  hintEl.classList.toggle("hide", nodes.size > 0);
+}
+
+function hubOf(e) { const a = nodes.get(e.from); return a.kind === "topic" ? a : nodes.get(e.to); }
+function accentColor(e) { return `var(${hubOf(e).accent})`; }
+// A "terminal" edge dead-ends at a leaf topic: one missing either a publisher or
+// a subscriber, so it's not part of a complete pub→topic→sub path. Both pub-only
+// (nobody listens) and sub-only (nobody produces) count. Those draw thin; a topic
+// wired on both sides is a live pass-through → drawn thicker.
+function topicIsLeaf(topicId) {
+  const r = routes.get(topicId);
+  return !!(r && (r.pubs.size === 0 || r.subs.size === 0));
+}
+function edgeIsTerminal(e) { return topicIsLeaf(hubOf(e).id); }
+
+// Direct edges: a border-to-border line with a slight quadratic bow. The bow
+// keeps a↔b pairs (a pub and a sub on the same channel) from stacking on top of
+// each other and gives the web an organic feel rather than hard chords.
+function borderPoint(n, ux, uy) {
+  const hw = n.w / 2 + 2, hh = n.h / 2 + 2;
+  const tx = Math.abs(ux) > 1e-6 ? hw / Math.abs(ux) : Infinity;
+  const ty = Math.abs(uy) > 1e-6 ? hh / Math.abs(uy) : Infinity;
+  const t = Math.min(tx, ty);
+  return { x: n.x + ux * t, y: n.y + uy * t };
+}
+function edgeGeom(e) {
+  const a = nodes.get(e.from), b = nodes.get(e.to);
+  const dx = b.x - a.x, dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const ux = dx / dist, uy = dy / dist;
+  const pa = borderPoint(a, ux, uy);
+  const pb = borderPoint(b, -ux, -uy);
+  const mx = (pa.x + pb.x) / 2, my = (pa.y + pb.y) / 2;
+  const bow = Math.min(26, dist * 0.13);
+  const cx = mx - uy * bow, cy = my + ux * bow;    // control point (edge normal)
+  // Split the quadratic at t=0.5 so there's an on-curve vertex at the middle for
+  // marker-mid (a flow-direction arrowhead) to sit on, oriented along the edge.
+  const q0x = (pa.x + cx) / 2, q0y = (pa.y + cy) / 2;
+  const q1x = (cx + pb.x) / 2, q1y = (cy + pb.y) / 2;
+  const midx = (q0x + q1x) / 2, midy = (q0y + q1y) / 2;
+  return {
+    d: `M ${pa.x.toFixed(1)} ${pa.y.toFixed(1)} Q ${q0x.toFixed(1)} ${q0y.toFixed(1)} ${midx.toFixed(1)} ${midy.toFixed(1)} Q ${q1x.toFixed(1)} ${q1y.toFixed(1)} ${pb.x.toFixed(1)} ${pb.y.toFixed(1)}`,
+    mid: { x: midx, y: midy },
+  };
+}
+function positionNode(n) {
+  if (!n.el) return;
+  n.el.style.left = (n.x - n.w / 2) + "px";
+  n.el.style.top = (n.y - n.h / 2) + "px";
+}
+function positionEdge(e) {
+  if (!e.el) return;
+  // frozen graphviz layout: draw its bspline (M + cubic segments) verbatim.
+  if (simFrozen && e.spline && e.spline.length >= 4) {
+    const pts = e.spline;
+    let d = `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
+    for (let i = 1; i + 2 < pts.length; i += 3) {
+      d += ` C ${pts[i].x.toFixed(1)} ${pts[i].y.toFixed(1)}` +
+        ` ${pts[i + 1].x.toFixed(1)} ${pts[i + 1].y.toFixed(1)}` +
+        ` ${pts[i + 2].x.toFixed(1)} ${pts[i + 2].y.toFixed(1)}`;
+    }
+    e.el.setAttribute("d", d);
+    placeEdgeLabel(e, pts[Math.floor(pts.length / 2)]);
+    return;
+  }
+  const g = edgeGeom(e);
+  e.el.setAttribute("d", g.d);
+  placeEdgeLabel(e, g.mid);
+}
+function placeEdgeLabel(e, p) {
+  if (!e.lab || !p) return;
+  e.lab.style.left = p.x.toFixed(1) + "px";
+  e.lab.style.top = p.y.toFixed(1) + "px";
+}
+function positionAll() { for (const n of nodes.values()) positionNode(n); for (const e of edges) positionEdge(e); sizeSvg(); }
+function edgesOf(n) { return edges.filter((e) => e.from === n.id || e.to === n.id); }
+
+function sizeSvg() {
+  let minX = 0, minY = 0, maxX = 0, maxY = 0;
+  for (const n of nodes.values()) {
+    minX = Math.min(minX, n.x - n.w); minY = Math.min(minY, n.y - n.h);
+    maxX = Math.max(maxX, n.x + n.w); maxY = Math.max(maxY, n.y + n.h);
+  }
+  const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
+  svg.setAttribute("viewBox", `${minX} ${minY} ${w} ${h}`);
+  svg.setAttribute("width", w); svg.setAttribute("height", h);
+  svg.style.left = minX + "px"; svg.style.top = minY + "px";
+}
+
+// ───────────────────────────────────────────────────────────── pan / zoom ──
+function applyView() {
+  viewport.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`;
+  const s = 22 * view.k;
+  flow.style.backgroundSize = `${s}px ${s}px`;
+  flow.style.backgroundPosition = `${view.x}px ${view.y}px`;
+  syncMarkerScale();
+}
+function fitView() {
+  if (!nodes.size) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const n of nodes.values()) {
+    minX = Math.min(minX, n.x - n.w / 2); minY = Math.min(minY, n.y - n.h / 2);
+    maxX = Math.max(maxX, n.x + n.w / 2); maxY = Math.max(maxY, n.y + n.h / 2);
+  }
+  const pad = 80, w = maxX - minX + pad * 2, h = maxY - minY + pad * 2;
+  view.k = Math.max(0.2, Math.min(1.4, Math.min(innerWidth / w, innerHeight / h)));
+  view.x = (innerWidth - (minX + maxX) * view.k) / 2;
+  view.y = (innerHeight - (minY + maxY) * view.k) / 2;
+  applyView();
+}
+function zoomAt(sx, sy, factor) {
+  const k2 = Math.max(0.2, Math.min(2.5, view.k * factor));
+  const wx = (sx - view.x) / view.k, wy = (sy - view.y) / view.k;
+  view.k = k2; view.x = sx - wx * k2; view.y = sy - wy * k2;
+  applyView();
+}
+// Zoom factor scales with the actual scroll distance (not a fixed step per
+// event): a macOS trackpad fires many rapid wheel events, so a per-event step
+// compounds into runaway zoom. ZOOM_SENSITIVITY keeps it gentle; the clamp caps
+// how far any single (large mouse-wheel) event can jump.
+const ZOOM_SENSITIVITY = 0.0016;
+flow.addEventListener("wheel", (ev) => {
+  ev.preventDefault();
+  const factor = Math.min(1.2, Math.max(1 / 1.2, Math.exp(-ev.deltaY * ZOOM_SENSITIVITY)));
+  zoomAt(ev.clientX, ev.clientY, factor);
+}, { passive: false });
+document.getElementById("zin").onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 1.2);
+document.getElementById("zout").onclick = () => zoomAt(innerWidth / 2, innerHeight / 2, 1 / 1.2);
+document.getElementById("fit").onclick = fitView;
+
+// layout switcher: one button per algorithm + `G` to cycle
+const layoutsEl = document.getElementById("layouts");
+for (const l of LAYOUTS) {
+  const b = document.createElement("button");
+  b.textContent = l.label;
+  b.dataset.layout = l.id;
+  b.title = `${l.label} layout`;
+  b.onclick = () => setLayout(l.id);
+  layoutsEl.appendChild(b);
+}
+function cycleLayout(dir = 1) {
+  const i = LAYOUTS.findIndex((l) => l.id === layoutId);
+  setLayout(LAYOUTS[(i + dir + LAYOUTS.length) % LAYOUTS.length].id);
+}
+updateLayoutButtons();
+
+// ─────────────────────────────────────────────────────── drag: pan & nodes ──
+let panning = null, dragNode = null, moved = false;
+flow.addEventListener("mousedown", (ev) => {
+  const nodeEl = ev.target.closest(".node");
+  moved = false;
+  if (nodeEl) {
+    const n = nodes.get(nodeEl.dataset.id);
+    dragNode = { n, sx: ev.clientX, sy: ev.clientY, ox: n.x, oy: n.y };
+    n.fixed = true;
+    reheat(0.7);
+  } else {
+    panning = { sx: ev.clientX, sy: ev.clientY, ox: view.x, oy: view.y };
+    flow.classList.add("grabbing");
+  }
+});
+addEventListener("mousemove", (ev) => {
+  if (dragNode) {
+    const dx = ev.clientX - dragNode.sx, dy = ev.clientY - dragNode.sy;
+    if (Math.abs(dx) + Math.abs(dy) > 3) moved = true;
+    dragNode.n.x = dragNode.ox + dx / view.k;
+    dragNode.n.y = dragNode.oy + dy / view.k;
+    reheat(0.5);
+    positionNode(dragNode.n);
+    // a dragged node's graphviz splines no longer fit; fall back to live geometry
+    for (const e of edgesOf(dragNode.n)) { e.spline = null; positionEdge(e); }
+    sizeSvg();
+    return;
+  }
+  if (panning) {
+    if (Math.abs(ev.clientX - panning.sx) + Math.abs(ev.clientY - panning.sy) > 3) moved = true;
+    view.x = panning.ox + (ev.clientX - panning.sx);
+    view.y = panning.oy + (ev.clientY - panning.sy);
+    applyView();
+    return;
+  }
+  const nodeEl = ev.target.closest(".node");
+  setHover(nodeEl ? nodes.get(nodeEl.dataset.id) : null);
+});
+addEventListener("mouseup", () => {
+  if (dragNode) {
+    dragNode.n.fixed = false;
+    reheat(0.6);
+    if (!moved) toggleCardPin(dragNode.n);   // a click (no drag) pins the module card
+    dragNode = null;
+  }
+  panning = null; flow.classList.remove("grabbing");
+});
+
+// ────────────────────────────────────────────────────── hover & expand ──
+let hovered = null;
+function setHover(n) {
+  if (n === hovered) return;
+  hovered = n;
+  const focus = new Set();
+  if (n) { focus.add(n.id); for (const e of edgesOf(n)) { focus.add(e.from); focus.add(e.to); } }
+  for (const node of nodes.values()) {
+    node.el.classList.toggle("dim", !!n && !focus.has(node.id));
+    node.el.classList.toggle("hi", node === n);
+  }
+  refreshEdges();
+  if (n && n.kind === "module") showCard(n);
+  else if (!n) hideCard();
+}
+// ── module card: a launcher-style detail popover ──
+// Built from the blueprint's per-module metadata (docstring, typed inputs/outputs,
+// skills, rpcs) with live Hz merged in. Shown on hover; a click pins it open.
+const cardEl = document.getElementById("card");
+let cardNode = null, cardPinned = false;
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function moduleCardHtml(n) {
+  const info = moduleInfo.get(n.id);
+  const label = info?.label || n.label;
+  const head = `<div class="chd"><span class="badge">MOD</span><span class="nm">${escapeHtml(label)}</span>` +
+    `<span class="pin">${cardPinned && cardNode === n ? "📌" : ""}</span></div>`;
+  if (!info) return head + `<div class="cbody"><span class="none">no blueprint metadata</span></div>`;
+  const stats = topicWindowStats();
+  // stats are keyed by topic *node* id (one per publisher instance), so resolve a
+  // stream through the channel it actually rides — its remapped wire name.
+  const rate = (s) => {
+    let hz = 0, lastAt = 0;
+    for (const id of topicBase.get(normBase(s.wire || s.name)) || []) {
+      const st = stats.get(id);
+      if (!st) continue;
+      hz = Math.max(hz, st.hz); lastAt = Math.max(lastAt, st.lastAt);
+    }
+    if (hz > 0.05) return `<span class="rt">${hz.toFixed(1)}Hz</span>`;
+    return lastAt ? `<span class="rt idle">${agoText(performance.now() - lastAt)}</span>` : "";
+  };
+  const chips = (arr, cls) => arr.length
+    ? `<div class="chips">` + arr.map((s) =>
+        `<span class="chip ${cls}">${escapeHtml(s.name)}` +
+        `${s.wire ? `<span class="rmp"> ↦ ${escapeHtml(s.wire)}</span>` : ""}` +
+        `<span class="ty">: ${escapeHtml((s.type || "?").split(".").pop())}</span>${rate(s)}</span>`).join("") + `</div>`
+    : `<span class="none">none</span>`;
+  const methods = (arr) => arr.length
+    ? arr.map((f) => `<div class="mrow">${escapeHtml(f.name)}(${(f.params || []).map((p) => escapeHtml(p.name)).join(", ")})` +
+        `${f.return_type ? `<span class="ret"> → ${escapeHtml(f.return_type)}</span>` : ""}</div>`).join("")
+    : `<span class="none">none</span>`;
+  return head + `<div class="cbody">` +
+    (info.doc ? `<div class="doc">${escapeHtml(info.doc)}</div>` : "") +
+    `<div class="sec"><span class="lbl">Publishes ${info.outputs.length}</span>${chips(info.outputs, "out")}</div>` +
+    `<div class="sec"><span class="lbl">Subscribes ${info.inputs.length}</span>${chips(info.inputs, "in")}</div>` +
+    (info.skills.length ? `<div class="sec"><span class="lbl">Skills</span>${methods(info.skills)}</div>` : "") +
+    (info.rpcs.length ? `<div class="sec"><span class="lbl">RPCs</span>${methods(info.rpcs)}</div>` : "") +
+    `</div>`;
+}
+function positionCard(n) {
+  const r = n.el.getBoundingClientRect();
+  const cw = 300, gap = 12;
+  let left = r.right + gap;
+  if (left + cw > innerWidth - 8) left = r.left - cw - gap;
+  if (left < 8) left = 8;
+  const ch = cardEl.offsetHeight || 220;
+  let top = Math.max(8, Math.min(r.top, innerHeight - 8 - ch));
+  cardEl.style.left = left + "px";
+  cardEl.style.top = top + "px";
+}
+function showCard(n) {
+  if (n.kind !== "module") return;
+  cardNode = n;
+  cardEl.innerHTML = moduleCardHtml(n);
+  cardEl.classList.add("show");
+  cardEl.classList.toggle("pinned", cardPinned);
+  positionCard(n);
+}
+function hideCard() {
+  if (cardPinned) return;
+  cardNode = null;
+  cardEl.classList.remove("show");
+}
+function toggleCardPin(n) {
+  if (n.kind !== "module") return;
+  if (cardPinned && cardNode === n) { cardPinned = false; cardNode = null; cardEl.classList.remove("show", "pinned"); return; }
+  cardPinned = true;
+  showCard(n);
+}
+// keep the card off the cursor's way but let it scroll; hovering the card holds it
+cardEl.addEventListener("mouseenter", () => { if (cardNode) hovered = cardNode; });
+
+// ─────────────────────────────────────────────────────────────── live data ──
+const perTopic = new Map();
+let totalMsgs = 0, totalBytes = 0, lastPacketAt = 0;
+const windowEvents = [];
+function noteTraffic(channel, count, bytes, transport) {
+  totalMsgs += count; totalBytes += bytes; lastPacketAt = performance.now();
+  windowEvents.push([lastPacketAt, count, bytes]);
+  let t = perTopic.get(channel);
+  if (!t) { t = { win: [], transport: transport || "", count: 0, lastAt: 0 }; perTopic.set(channel, t); }
+  if (transport && !t.transport) t.transport = transport;
+  t.win.push([lastPacketAt, count, bytes]);
+  t.count += count; t.lastAt = lastPacketAt;
+  const hub = nodes.get(channel);
+  if (hub) { hub.active = 1; hub.lastTraffic = lastPacketAt; for (const e of edgesOf(hub)) e.active = 1; }
+}
+// Floating "recent activity" topics: channels seen live but absent from the
+// blueprint (e.g. a rarely-fired cancel_goal) get their own topic node so they
+// show up on the graph, and are swept away RECENT_TOPIC_MS after their last
+// packet. Blueprint topics are never swept — they just go idle. The window is
+// long because a rare topic now advertises its age instead of reading as dead.
+const RECENT_TOPIC_MS = 30 * 60 * 1000;
+function ensureDynamicTopic(base, transport) {
+  const nodeId = "dyn:" + base;
+  const hub = ensureNode(nodeId, "topic", base, transport);
+  hub.dynamic = true; hub.baseKey = base;
+  if (!routes.has(nodeId)) routes.set(nodeId, { pubs: new Set(), subs: new Set() });
+  topicBase.set(base, [nodeId]);
+  return nodeId;
+}
+function removeDynamicTopic(id) {
+  const n = nodes.get(id);
+  if (!n) return;
+  n.el?.remove();
+  for (let i = edges.length - 1; i >= 0; i--) {
+    const e = edges[i];
+    if (e.from === id || e.to === id) { e.el?.remove(); e.lab?.remove(); edges.splice(i, 1); edgeIndex.delete(e.from + "|" + e.to); }
+  }
+  nodes.delete(id);
+  routes.delete(id);
+  perTopic.delete(id);
+  if (n.baseKey) topicBase.delete(n.baseKey);
+}
+function rollWindow(arr, now) { while (arr.length && now - arr[0][0] > 5000) arr.shift(); }
+function topicWindowStats() {
+  const now = performance.now(), out = new Map();
+  for (const [ch, t] of perTopic) {
+    rollWindow(t.win, now);
+    let m = 0, b = 0;
+    for (const [, c, bb] of t.win) { m += c; b += bb; }
+    out.set(ch, { hz: m / 5, bps: b / 5, count: t.count, lastAt: t.lastAt });
+  }
+  return out;
+}
+// A rare topic (clicked_point, cancel_goal) reads 0 Hz on a 5s window, so instead
+// of a blank we report how long ago its last message landed.
+function agoText(msAgo) {
+  const s = msAgo / 1000;
+  if (s < 1.5) return "just now";
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  return `${(s / 3600).toFixed(s < 36000 ? 1 : 0)}h ago`;
+}
+function human(bytes) {
+  const u = ["B", "KiB", "MiB", "GiB"]; let i = 0;
+  while (bytes >= 1024 && i < u.length - 1) { bytes /= 1024; i++; }
+  return bytes.toFixed(i ? 1 : 0) + " " + u[i];
+}
+// network throughput from bytes/sec → bits/sec (bps/Kbps/Mbps/Gbps, decimal 1000s)
+function humanBits(bytesPerSec) {
+  let bits = bytesPerSec * 8; const u = ["bps", "Kbps", "Mbps", "Gbps"]; let i = 0;
+  while (bits >= 1000 && i < u.length - 1) { bits /= 1000; i++; }
+  return bits.toFixed(bits >= 100 || i === 0 ? 0 : 1) + " " + u[i];
+}
+// value → color on a cool→hot gradient (blue = low/slow, red = high/fast).
+// Hue climbs 210°→360° (blue → violet → magenta → red) so it skips the green
+// band a straight 210→8 ramp would pass through.
+function heatColor(frac) {
+  const f = Math.max(0, Math.min(1, frac));
+  return `hsl(${(210 + 150 * f).toFixed(0)} 85% 62%)`;
+}
+// normalize on a log scale (rates/mem span orders of magnitude) → 0..1 vs a max.
+function heatFracLog(value, max) {
+  if (!(max > 0) || !(value > 0)) return 0;
+  return Math.log1p(value) / Math.log1p(max);
+}
+
+// ─────────────────────────────────────────────────────────── app-bus feed ──
+const connEl = document.getElementById("conn");
+let lastMsg = 0, dtopData = null, dtopAt = 0;
+const dimApp = new DimAppFrontend();
+dimApp.receiveRequest((tag, msg) => {
+  if (tag !== "lcmflow" || !msg) return;
+  lastMsg = Date.now();
+  connEl.textContent = "▮ live"; connEl.className = "live";
+  if (msg.kind === "graph") applyGraph(msg);
+  else if (msg.kind === "dtop") { dtopData = msg.data; dtopAt = Date.now(); }
+  else if (msg.kind === "packets") handlePackets(msg.events);
+});
+// Live traffic animates the blueprint graph: match each channel to a topic node
+// by normalized name. Channels with no blueprint node get a floating "recent
+// activity" node (swept after RECENT_TOPIC_MS idle) so late/rare topics still appear.
+function handlePackets(events) {
+  for (const ev of events || []) {
+    const [transport, channel, count, bytes] = ev;
+    const base = normBase(channel);
+    let ids = topicBase.get(base);
+    if (!ids) ids = [ensureDynamicTopic(base, transport)];
+    for (const nodeId of ids) noteTraffic(nodeId, count, bytes, transport);
+  }
+  // a new floating node needs its DOM built + a gentle relax to place it
+  if (dirty) { buildDom(); dirty = false; if (!simFrozen) reheat(0.5); }
+}
+setInterval(() => { if (Date.now() - lastMsg > 4000) { connEl.textContent = "○ waiting for run"; connEl.className = ""; } }, 1000);
+dimApp.send("hello");
+
+// debug handle (console poking / offline rendering checks)
+globalThis.__lcmflow = { applyGraph, noteTraffic, handlePackets, removeDynamicTopic, feedDtop: (d) => { dtopData = d; dtopAt = Date.now(); renderDtop(); }, nodes, edges, routes, topicBase, moduleInfo, fitView, showCard, toggleCardPin, setHover, setLayout, LAYOUTS, relaxAndFrame };
+
+// ─────────────────────────────────────────────────────────── animation ──
+let paused = false;
+function refreshEdges() {
+  for (const e of edges) {
+    if (!e.el) continue;
+    const on = hovered && (e.from === hovered.id || e.to === hovered.id);
+    const lit = e.active > 0.05;
+    const hot = on || lit;
+    // resting edges/arrows are subdued but readable; terminal (dead-end) edges thin
+    const rest = "color-mix(in oklch, var(--muted-fg) 55%, var(--border))";
+    const base = edgeIsTerminal(e) ? 1.1 : 2.4;
+    e.el.style.color = hot ? accentColor(e) : rest;                  // arrow marker (currentColor)
+    e.el.style.stroke = hot ? accentColor(e) : rest;
+    e.el.style.strokeWidth = (on ? base + 1.1 : lit ? base + 0.6 : base).toFixed(1);
+    e.el.style.strokeDasharray = lit ? "5 6" : "none";
+    if (e.lab) {
+      e.lab.style.color = hot ? accentColor(e) : "var(--muted-fg)";
+      e.lab.style.borderColor = hot ? accentColor(e) : rest;
+    }
+  }
+}
+function animate() {
+  requestAnimationFrame(animate);
+  if (!paused && !simFrozen && heat > 0.04) {
+    stepForces();
+    heat *= 0.985;
+    if (heat < 0.04) heat = 0;
+    positionAll();
+  }
+  let any = false;
+  for (const e of edges) { if (!paused && e.active > 0.001) { e.active *= 0.95; any = true; } }
+  for (const n of nodes.values()) {
+    if (!paused && n.active > 0.001) { n.active *= 0.95; }
+    if (n.el) n.el.classList.toggle("pulse", n.active > 0.3);
+  }
+  if (any) {
+    const off = (performance.now() * -0.03) % 11;
+    for (const e of edges) if (e.active > 0.05 && e.el) e.el.style.strokeDashoffset = off.toFixed(1);
+    refreshEdges();
+  }
+}
+requestAnimationFrame(animate);
+
+// periodic HUD + module rate badges + edge labels + dtop
+setInterval(() => {
+  const now = performance.now();
+  rollWindow(windowEvents, now);
+  let wm = 0, wb = 0;
+  for (const [, c, b] of windowEvents) { wm += c; wb += b; }
+  // sweep floating "recent activity" topics that have been idle past the window
+  for (const n of nodes.values()) {
+    if (n.dynamic && now - (n.lastTraffic || 0) > RECENT_TOPIC_MS) removeDynamicTopic(n.id);
+  }
+  const mods = [...nodes.values()].filter((n) => n.kind === "module");
+  const tops = [...nodes.values()].filter((n) => n.kind === "topic");
+  for (const t of tops) if (t.el) t.el.classList.toggle("orphan", isOrphan(t.id));   // pub-only → gray (live)
+  document.getElementById("r-graph").innerHTML = `<b>${mods.length}</b> modules · <b>${tops.length}</b> topics`;
+  document.getElementById("r-rate").innerHTML = `<b>${(wm / 5).toFixed(1)}</b> Hz · <b>${human(wb / 5)}</b>/s`;
+
+  const stats = topicWindowStats();
+  // rates belong to topics, not modules — show each topic's live Hz on its node
+  for (const t of tops) {
+    if (!t.el) continue;
+    const s = stats.get(t.id);
+    const rateEl = t.el.querySelector(".rate");
+    if (!rateEl) continue;
+    if (s && s.hz > 0.05) rateEl.innerHTML = `<b>${s.hz.toFixed(1)}</b> Hz`;
+    else if (s && s.lastAt) rateEl.innerHTML = `<span class="ago">${agoText(now - s.lastAt)}</span>`;
+    else rateEl.innerHTML = "";
+  }
+  if (cardNode && cardEl.classList.contains("show")) { cardEl.innerHTML = moduleCardHtml(cardNode); positionCard(cardNode); }
+  renderTopics(tops, stats);
+  refreshEdges();
+  renderDtop();
+}, 400);
+
+// ─────────────────────────────────────────────────────────────── topics ──
+let topicSort = "bps";   // sort column: "bps" (bandwidth) | "hz"
+function applyTopicSortUI() {
+  for (const el of document.querySelectorAll("#topics-sort .sortkey")) {
+    el.classList.toggle("active", el.dataset.sort === topicSort);
+  }
+}
+document.getElementById("topics-sort").addEventListener("click", (ev) => {
+  const key = ev.target.closest(".sortkey");
+  if (!key) return;
+  topicSort = key.dataset.sort;
+  applyTopicSortUI();
+  renderTopics([...nodes.values()].filter((n) => n.kind === "topic"), topicWindowStats());
+});
+applyTopicSortUI();
+function renderTopics(tops, stats) {
+  const panel = document.getElementById("topics");
+  if (panel.classList.contains("hide")) return;
+  document.getElementById("topics-count").textContent = tops.length;
+  const now = performance.now();
+  const rows = tops.map((t) => {
+    const s = stats.get(t.id);
+    return {
+      label: t.label, accent: t.accent,
+      hz: s ? s.hz : 0, bps: s ? s.bps : 0,
+      lastAt: s ? s.lastAt : 0, count: s ? s.count : 0,
+      live: !!(s && s.hz > 0.05),
+    };
+  // idle topics sort by recency (a rare topic that just fired sits at the top of
+  // the idle block) and never-seen ones sink to the bottom
+  }).sort((a, b) => {
+    if (a.live !== b.live) return a.live ? -1 : 1;
+    if (!a.live) return (b.lastAt - a.lastAt) || a.label.localeCompare(b.label);
+    return topicSort === "hz"
+      ? (b.hz - a.hz) || (b.bps - a.bps) || a.label.localeCompare(b.label)
+      : (b.bps - a.bps) || (b.hz - a.hz) || a.label.localeCompare(b.label);
+  });
+  const maxHz = Math.max(0, ...rows.filter((r) => r.live).map((r) => r.hz));
+  const maxBps = Math.max(0, ...rows.filter((r) => r.live).map((r) => r.bps));
+  const body = document.getElementById("topics-body");
+  body.innerHTML = rows.length
+    ? rows.map((r) => {
+        const hzCol = heatColor(heatFracLog(r.hz, maxHz));
+        const tpCol = heatColor(heatFracLog(r.bps, maxBps));
+        const idleHz = r.lastAt ? `<span class="ago">${agoText(now - r.lastAt)}</span>` : "—";
+        const tip = r.lastAt ? ` title="${r.count} msg${r.count === 1 ? "" : "s"} · last ${agoText(now - r.lastAt)}"` : "";
+        return `<div class="trow ${r.live ? "live" : "idle"}" style="--accent:var(${r.accent})"${tip}>` +
+          `<span class="dot"></span><span class="n">${escapeHtml(r.label)}</span>` +
+          `<span class="hz">${r.live ? `<b style="color:${hzCol}">${r.hz.toFixed(1)}</b> Hz` : idleHz}</span>` +
+          `<span class="tp"${r.live ? ` style="color:${tpCol}"` : ""}>${r.live ? humanBits(r.bps) : "—"}</span></div>`;
+      }).join("")
+    : '<div class="empty">no topics — start a blueprint</div>';
+}
+
+// ───────────────────────────────────────────────────────────────── dtop ──
+let dtopRows = [];   // raw entries backing the rows, indexed for hover detail
+function renderDtop() {
+  const rows = [];
+  if (dtopData) {
+    const add = (role, x, alive) => rows.push({ role, alive, cpu: x.cpu_percent || 0, mem: x.pss || 0, raw: x });
+    if (dtopData.coordinator) add("coordinator", dtopData.coordinator, true);
+    for (const w of dtopData.workers || []) {
+      const mods = Array.isArray(w.modules) ? w.modules.filter(Boolean) : [];
+      const label = mods.length ? mods.join(", ") : `worker ${w.worker_id ?? "?"}`;
+      add(label, w, w.alive !== false);
+    }
+  }
+  dtopRows = rows;
+  const live = dtopData && (Date.now() - dtopAt < 4000);
+  const status = document.getElementById("dtop-status");
+  status.textContent = live ? "● live" : "○ no stream";
+  status.style.color = live ? "var(--info)" : "var(--muted-fg)";
+  const maxMem = Math.max(0, ...rows.map((r) => r.mem));
+  document.getElementById("dtop-body").innerHTML = rows.length
+    ? rows.map((r, i) => {
+        const cpuCol = heatColor(Math.min(1, r.cpu / 100));
+        const memCol = heatColor(heatFracLog(r.mem, maxMem));
+        return `<div class="row" data-i="${i}"><span class="n"${r.alive ? "" : ' style="opacity:.5"'}>${r.role}</span>` +
+          `<span class="c"><b style="color:${cpuCol}">${r.cpu.toFixed(0)}</b>%</span>` +
+          `<span class="c" style="color:${memCol}">${human(r.mem)}</span></div>`;
+      }).join("")
+    : '<div class="empty">launch a blueprint with <b>--dtop</b></div>';
+  if (dtopTipRow >= 0 && dtopRows[dtopTipRow]) showDtopTip(dtopTipRow);   // keep an open tip fresh
+}
+
+// seconds → compact duration (dtop TUI shows cpu_time_* as elapsed time)
+function humanSecs(s) {
+  s = +s || 0;
+  if (s < 60) return s.toFixed(s < 10 ? 2 : 1) + "s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + Math.round(s % 60) + "s";
+  return Math.floor(s / 3600) + "h " + Math.round((s % 3600) / 60) + "m";
+}
+const dtopTipEl = document.getElementById("dtop-tip");
+let dtopTipRow = -1;
+// A full per-worker readout mirroring `dimos dtop`: every field the payload
+// carries (times, threads, fds, IO, child processes) — a superset of the row.
+function dtopTipHtml(r) {
+  const x = r.raw || {};
+  const kv = (label, val) => `<span>${label} <b>${val}</b></span>`;
+  const head = `<div class="th"><span class="role"${r.alive ? "" : ' style="opacity:.5"'}>${escapeHtml(r.role)}</span>` +
+    `${x.alive === false ? `<span style="color:var(--warn);font-size:9px">dead</span>` : ""}` +
+    `<span class="pid">pid ${x.pid ?? "—"}</span></div>`;
+  const mods = x.worker_id != null
+    ? `<div class="mods">worker ${x.worker_id}${x.dedicated ? " · dedicated" : ""}</div>` : "";
+  const stats = `<div class="kv">` +
+    kv("CPU", `${(x.cpu_percent ?? 0).toFixed(0)}%`) +
+    kv("PSS", human(x.pss ?? 0)) +
+    kv("Thr", x.num_threads ?? "—") +
+    kv("Child", x.num_children ?? "—") +
+    kv("FDs", x.num_fds ?? "—") +
+    kv("UserT", humanSecs(x.cpu_time_user)) +
+    kv("SysT", humanSecs(x.cpu_time_system)) +
+    kv("ioT", humanSecs(x.cpu_time_iowait)) +
+    kv("IO↓", human(x.io_read_bytes ?? 0)) +
+    kv("IO↑", human(x.io_write_bytes ?? 0)) +
+    `</div>`;
+  const kids = Array.isArray(x.children) && x.children.length
+    ? `<div class="ch"><div class="chd">CHILD PROCS ${x.children.length}</div>` +
+      x.children.map((c) => `<div class="crow"><span class="cn">${escapeHtml(c.name || "?")} <span style="color:var(--muted-fg)">${c.pid ?? ""}</span></span>` +
+        `<span class="cp">${(c.cpu_percent ?? 0).toFixed(0)}%</span></div>`).join("") + `</div>`
+    : "";
+  return head + mods + stats + kids;
+}
+function showDtopTip(i) {
+  const r = dtopRows[i];
+  if (!r) return hideDtopTip();
+  dtopTipRow = i;
+  dtopTipEl.innerHTML = dtopTipHtml(r);
+  dtopTipEl.classList.add("show");
+  const rowEl = document.querySelector(`#dtop-body .row[data-i="${i}"]`);
+  const panel = document.getElementById("dtop").getBoundingClientRect();
+  const rb = (rowEl || document.getElementById("dtop-body")).getBoundingClientRect();
+  const tw = dtopTipEl.offsetWidth || 250, th = dtopTipEl.offsetHeight || 120;
+  let left = panel.left - tw - 10;                       // prefer left of the panel
+  if (left < 8) left = panel.right + 10;                 // else to the right
+  if (left + tw > innerWidth - 8) left = innerWidth - 8 - tw;
+  let top = Math.min(rb.top, innerHeight - 8 - th);
+  dtopTipEl.style.left = Math.max(8, left) + "px";
+  dtopTipEl.style.top = Math.max(8, top) + "px";
+}
+function hideDtopTip() { dtopTipRow = -1; dtopTipEl.classList.remove("show"); }
+document.getElementById("dtop-body").addEventListener("mouseover", (ev) => {
+  const row = ev.target.closest(".row"); if (!row) return;
+  showDtopTip(+row.dataset.i);
+});
+document.getElementById("dtop-body").addEventListener("mouseleave", hideDtopTip);
+
+// ─────────────────────────────────────────────────────────── keyboard ──
+document.getElementById("topics-head").addEventListener("click", () => {
+  document.getElementById("topics").classList.toggle("collapsed");
+});
+document.getElementById("dtop-head").addEventListener("click", () => {
+  document.getElementById("dtop").classList.toggle("collapsed");
+});
+
+addEventListener("keydown", (ev) => {
+  if (ev.key === " ") { paused = !paused; ev.preventDefault(); }
+  if (ev.key === "d") document.getElementById("dtop").classList.toggle("show");
+  if (ev.key === "t") document.getElementById("topics").classList.toggle("hide");
+  if (ev.key === "f" || ev.key === "0") fitView();
+  if (ev.key === "g") cycleLayout(1);
+  if (ev.key === "G") cycleLayout(-1);
+});
+
+applyView();
+addEventListener("resize", applyView);
+</script>
+</body>
+</html>

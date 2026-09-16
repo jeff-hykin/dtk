@@ -186,6 +186,13 @@ export const tools = [
         needsDimosModule: "dimos/robot/get_all_blueprints.py",
     },
     {
+        name: "blueprint_graph",
+        kind: "python",
+        description: "Print a blueprint's module/topic graph as json",
+        entry: "tools/blueprint_graph.py",
+        needsDimosModule: "dimos/robot/get_all_blueprints.py",
+    },
+    {
         name: "log_path",
         kind: "python",
         description: "Print where dimos is writing its jsonl log",
@@ -198,6 +205,17 @@ export const tools = [
         description: "Render the DimOS Blueprints in a python file as a diagram in the browser",
         entry: "tools/graph.py",
         needsDimosModule: "dimos/core/coordination/blueprints.py",
+    },
+    {
+        name: "spy",
+        kind: "binary",
+        description: "Passively sniff LCM and zenoh traffic, as newline-delimited json",
+        repo: "jeff-hykin/dim-lcm-constellation",
+        assets: {
+            "x86_64-unknown-linux-gnu": "spy-x86_64-linux",
+            "aarch64-unknown-linux-gnu": "spy-aarch64-linux",
+            "aarch64-apple-darwin": "spy-aarch64-macos",
+        },
     },
     {
         name: "web_ctrl",

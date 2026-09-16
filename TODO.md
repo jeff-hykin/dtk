@@ -207,19 +207,15 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
       sample stands. Verified in a real browser: 0 console errors, Recent populated from disk,
       11 links parsed from the handheld_recorder URDF.
 
-- [ ] Turn https://github.com/jeff-hykin/dim-lcm-constellation into a standalone server/cli tool
-      and add it to dtk. Needs adaptation and a recompile. What it is made of, from reading it:
-    - `dim/apps/lcmflow/main.js` — a Deno backend that talks the dim-app websocket bus. dtk
-      already stands in for that host: `tools/urdf_edit.js` serves `/ws` and answers
-      `{data:[kind, payload]}`, which is the same protocol. Copy that.
-    - `dim/apps/lcmflow/spy/` — a Rust binary that passively sniffs LCM multicast and Zenoh and
-      prints newline-delimited JSON. **This is the recompile**: it needs a release workflow in
-      that repo publishing `spy-x86_64-linux`, `spy-aarch64-linux`, `spy-aarch64-macos`, exactly
-      like web_ctrl's, and then a `kind: "binary"` entry here.
-    - `dim/apps/lcmflow/frontend/` — index.html plus an icon. Vendor it next to
-      `tools/urdf_edit_files/`, including `theme.css`, the same way.
-    - The backend asks a dimos-helm server on `:1024` for blueprint metadata. Standalone there is
-      no helm, so that has to fall back to what the README says it used to do: parse the newest
-      run log's structured `Transport` events. `dtk log` already finds that log.
-    - Note `lcm_vendor/` is `@dimos/lcm@0.2.0` with a local fix (upstream never joins the
-      multicast group), so it cannot be swapped for the jsr import yet.
+- [~] dim-lcm-constellation is now `dtk constellation`, and the pieces are in place:
+    - [x] its `spy` (Rust, sniffs LCM multicast and zenoh) has a release workflow in that repo
+          building static musl for both linux arches and native for macOS, published as
+          `spy-<platform>`; registered here as a `kind: "binary"` tool.
+    - [x] the frontend is vendored into `tools/constellation_files/` with `theme.css`, and
+          `commands/constellation.js` serves it plus the dim-app websocket bus, the same shim
+          `urdf_edit` uses.
+    - [x] the desktop's `/api/dimos-info` is replaced by `tools/blueprint_graph.py`, which reads
+          the blueprint the way `dtk run` does; the running blueprint still comes from the dimos
+          run registry, exactly as the original backend read it.
+    - [ ] NOT YET VERIFIED end to end: it needs the spy release to finish building and a live
+          `dimos run` to watch. Until then this is wired, not proven.

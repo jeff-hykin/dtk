@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="LCM Flow">
+  <!-- edges -->
+  <path d="M16 20 L48 32 M16 44 L48 32 M48 32 L52 14 M48 32 L52 50" stroke="#00bcd4" stroke-width="2" opacity="0.5"/>
+  <!-- flowing particles -->
+  <circle cx="30" cy="26.5" r="2.2" fill="#45e0ff"/>
+  <circle cx="34" cy="38" r="2" fill="#45e0ff" opacity="0.8"/>
+  <circle cx="50" cy="22" r="1.8" fill="#45e0ff" opacity="0.7"/>
+  <!-- module nodes -->
+  <circle cx="16" cy="20" r="5" fill="none" stroke="#7f97ab" stroke-width="2"/>
+  <circle cx="16" cy="44" r="5" fill="none" stroke="#7f97ab" stroke-width="2"/>
+  <!-- topic hub -->
+  <circle cx="48" cy="32" r="6" fill="#00bcd4"/>
+  <!-- leaf nodes -->
+  <circle cx="52" cy="14" r="3.5" fill="none" stroke="#7f97ab" stroke-width="2"/>
+  <circle cx="52" cy="50" r="3.5" fill="none" stroke="#7f97ab" stroke-width="2"/>
+</svg>
