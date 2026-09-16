@@ -18,4 +18,13 @@ export default new Command()
         } catch (error) {
             console.log(`${tool.name} was not downloaded`)
         }
+        if (tool.kind === "binary") {
+            // the note saying its nix closure is already imported; the store
+            // paths themselves stay, for nix's own garbage collection to decide
+            try {
+                Deno.removeSync(`${path}.closure`)
+            } catch (error) {
+                // there was none
+            }
+        }
     })

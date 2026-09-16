@@ -119,19 +119,86 @@ async function ensureBinary(tool, { force }) {
     }
     Deno.mkdirSync(`${cacheDir}/bin`, { recursive: true })
     const temporaryPath = `${destination}.partial`
-    const url = `https://github.com/${tool.repo}/releases/latest/download/${assetName}`
     console.error(`dtk: downloading ${tool.name} for ${target}`)
-    const response = await fetch(url)
-    if (response.ok) {
-        Deno.writeFileSync(temporaryPath, new Uint8Array(await response.arrayBuffer()))
-    } else {
-        // a private repo needs auth, and `gh` already has it
-        response.body?.cancel()
-        await downloadWithGh(tool, assetName, temporaryPath, response.status)
-    }
+    await downloadAsset(tool, assetName, temporaryPath)
     Deno.chmodSync(temporaryPath, 0o755)
     Deno.renameSync(temporaryPath, destination)
+    await ensureNixClosure(tool, target, { force })
     return destination
+}
+
+// Some of these binaries come out of nix and are not static: they name
+// /nix/store paths as their ELF interpreter and RUNPATH, because the libraries
+// they need are dynamic. The release carries a gzipped `nix-store --export` of
+// the runtime closure beside each one, and importing that is what makes those
+// paths exist here.
+async function ensureNixClosure(tool, target, { force = false } = {}) {
+    const assetName = tool.nixClosure?.[target]
+    if (assetName === undefined) {
+        return
+    }
+    const stamp = `${binaryPathOf(tool)}.closure`
+    if (!force) {
+        try {
+            Deno.statSync(stamp)
+            return
+        } catch (error) {
+            // not imported yet
+        }
+    }
+    let nixVersion = null
+    try {
+        const probe = await new Deno.Command("nix", {
+            args: ["--version"],
+            stdout: "piped",
+            stderr: "null",
+        }).output()
+        nixVersion = new TextDecoder().decode(probe.stdout).trim()
+    } catch (error) {
+        nixVersion = null
+    }
+    if (nixVersion === null) {
+        throw new Error(
+            `dtk: ${tool.name} for ${target} is built by nix and needs nix here to run.\n` +
+            `     Install it, then run \`dtk update ${tool.name}\`:\n` +
+            `       curl -fsSL https://install.determinate.systems/nix | sh -s -- install`,
+        )
+    }
+    console.error(`dtk: fetching what ${tool.name} needs at runtime (${nixVersion})`)
+    const archive = `${binaryPathOf(tool)}.closure.gz`
+    await downloadAsset(tool, assetName, archive)
+    const importer = new Deno.Command("nix-store", {
+        args: ["--import"],
+        stdin: "piped",
+        stdout: "null",
+        stderr: "inherit",
+    }).spawn()
+    const file = await Deno.open(archive, { read: true })
+    await file.readable
+        .pipeThrough(new DecompressionStream("gzip"))
+        .pipeTo(importer.stdin)
+    const { success } = await importer.status
+    Deno.removeSync(archive)
+    if (!success) {
+        throw new Error(
+            `dtk: could not import ${tool.name}'s runtime closure.\n` +
+            `     Unsigned paths need a trusted user; add yourself to trusted-users in nix.conf.`,
+        )
+    }
+    Deno.writeTextFileSync(stamp, `${assetName}\n`)
+}
+
+// The plain fetch first, then `gh`, which already has credentials for a private repo.
+async function downloadAsset(tool, assetName, destination) {
+    const url = `https://github.com/${tool.repo}/releases/latest/download/${assetName}`
+    const response = await fetch(url)
+    if (response.ok) {
+        const file = await Deno.open(destination, { write: true, create: true, truncate: true })
+        await response.body.pipeTo(file.writable)
+        return
+    }
+    response.body?.cancel()
+    await downloadWithGh(tool, assetName, destination, response.status)
 }
 
 async function downloadWithGh(tool, assetName, temporaryPath, status) {
