@@ -57,11 +57,20 @@ def load_blueprint(names: list[str]):
     """The same two lines `dimos run` uses, so what is checked is what will run:
     the config tokens are split off the blueprint names, and several blueprints
     are joined by autoconnect rather than by concatenation."""
-    from dimos.core.coordination.blueprint_config.parser import split_run_arguments
     from dimos.core.coordination.blueprints import autoconnect
     from dimos.robot.get_all_blueprints import get_by_name_or_exit
 
-    blueprint_names, _ = split_run_arguments(names)
+    try:
+        from dimos.core.coordination.blueprint_config.parser import split_run_arguments
+
+        blueprint_names, _ = split_run_arguments(names)
+    except ImportError:
+        # Older branches have no config tokens at all, so everything that is not
+        # a flag and not a key=value is a blueprint name.
+        blueprint_names = [
+            each for each in names
+            if not each.startswith("-") and "=" not in each
+        ]
     if not blueprint_names:
         raise ValueError("no blueprint named")
     return autoconnect(*map(get_by_name_or_exit, blueprint_names))
