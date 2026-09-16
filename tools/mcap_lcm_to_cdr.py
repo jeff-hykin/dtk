@@ -1,26 +1,4 @@
-#!/bin/sh
-''''true
-# Runs as /bin/sh first, then re-execs itself under python. The script needs a
-# dimos checkout for `import dimos` and its project environment for the deps,
-# and that path is per-machine, which a plain shebang cannot express. Set
-# DIMOS_REPO to pick one. The probe looks for the module this script actually
-# imports rather than for the folder, because the clones sit on different
-# branches and not all of them have it.
-for candidate in "$DIMOS_REPO" "$HOME/repos/dimos" "$HOME/repos/dimos2" \
-                 "$HOME/repos/dimos3" "$HOME/repos/dimos4" \
-                 "$HOME/repos/dimos5" "$HOME/repos/dimos6" "$HOME/dimos"; do
-    if [ -n "$candidate" ] && [ -f "$candidate/dimos/msgs/geometry_msgs/PointStamped.py" ]; then
-        repo="$candidate"
-        break
-    fi
-done
-if [ -z "$repo" ]; then
-    echo "mcap_lcm_to_cdr: found no dimos checkout containing dimos/msgs/geometry_msgs/PointStamped.py" >&2
-    echo "mcap_lcm_to_cdr: set DIMOS_REPO to one" >&2
-    exit 1
-fi
-exec uv run --project "$repo" --with mcap --with rosbags python "$0" "$@"
-# '''
+#!/usr/bin/env python3
 """Re-encode a web_ctrl .mcap so Foxglove can read it.
 
 web_ctrl writes `image`, `color_image` and `tf` as ROS2 CDR but leaves everything else as

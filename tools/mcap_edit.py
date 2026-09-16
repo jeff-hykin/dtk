@@ -1,4 +1,4 @@
-#!/usr/bin/env -S uv run --with zstandard --with lz4 python
+#!/usr/bin/env python3
 """Rename or delete topics in an .mcap without copying it.
 
 A recording that is tens of gigabytes cannot be fixed by writing a corrected copy

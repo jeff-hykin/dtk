@@ -1,8 +1,12 @@
 // Every sub-tool dtk knows about. Nothing here is downloaded until it is run.
 //
 // kind: "deno"   — a self-contained deno script, fetched into the cache and run
-// kind: "exec"   — a script carrying its own shebang (uv, /bin/sh), run directly
+// kind: "python" — run through `uv run`, with the project resolved by python.js
 // kind: "binary" — a precompiled executable pulled from a github release
+//
+// A python tool says what it imports rather than where it lives:
+// `needsDimosModule` is the module path that decides which dimos checkout can
+// host it, and `withPackages` are the pypi packages uv should add on top.
 //
 // `formats` says which recording formats the tool accepts, and is what `dtk data`
 // checks before handing a file over.
@@ -107,10 +111,12 @@ export const tools = [
     },
     {
         name: "db_to_mcap",
-        kind: "exec",
+        kind: "python",
         description: "Convert a memory2 .db recording into a ROS 2 .mcap (needs a dimos checkout and uv)",
-        entry: "tools/db_to_mcap",
+        entry: "tools/db_to_mcap.py",
         formats: ["db"],
+        needsDimosModule: "dimos/memory2/store/sqlite.py",
+        withPackages: ["mcap", "rosbags"],
     },
     {
         name: "mcap_to_db",
@@ -130,10 +136,11 @@ export const tools = [
     },
     {
         name: "mcap_edit",
-        kind: "exec",
+        kind: "python",
         description: "Rename or delete topics and tf edges in an .mcap without copying it (needs uv)",
-        entry: "tools/mcap_edit",
+        entry: "tools/mcap_edit.py",
         formats: ["mcap"],
+        withPackages: ["zstandard", "lz4"],
     },
     {
         name: "mcap_check",
@@ -145,10 +152,19 @@ export const tools = [
     },
     {
         name: "mcap_lcm_to_cdr",
-        kind: "exec",
+        kind: "python",
         description: "Re-encode the raw-LCM channels of an .mcap as CDR, so Foxglove can read them (needs a dimos checkout and uv)",
-        entry: "tools/mcap_lcm_to_cdr",
+        entry: "tools/mcap_lcm_to_cdr.py",
         formats: ["mcap"],
+        needsDimosModule: "dimos/msgs/geometry_msgs/PointStamped.py",
+        withPackages: ["mcap", "rosbags"],
+    },
+    {
+        name: "graph",
+        kind: "python",
+        description: "Render the DimOS Blueprints in a python file as a diagram in the browser",
+        entry: "tools/graph.py",
+        needsDimosModule: "dimos/core/coordination/blueprints.py",
     },
     {
         name: "web_ctrl",

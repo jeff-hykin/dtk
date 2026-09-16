@@ -43,9 +43,58 @@ Everything after the tool name is handed to the tool untouched.
 | `lite_record` | Handheld multi-sensor mcap recorder for RealSense, Orbbec and Livox Mid-360 |
 | `icp_stitch` | Offline loop-closure post-processing: tag PGO + ICP stitching |
 
-The first six are deno scripts fetched from this repo. The last three are precompiled binaries
-pulled from their own repo's latest release, for `x86_64-linux`, `aarch64-linux` and
-`aarch64-macos`.
+`dtk list` has the full set — `db_cp`, `db_delete`, `db_rename`, `db_tree`, `db_to_rrd`,
+`tf_check`, `mcap_edit`, `mcap_check` and `graph` are there too.
+
+The deno and python tools are fetched from this repo; `web_ctrl`, `lite_record` and `icp_stitch`
+are precompiled binaries pulled from their own repo's latest release, for `x86_64-linux`,
+`aarch64-linux` and `aarch64-macos`. `lite_record`'s linux builds come out of nix and are not
+static, so dtk also fetches and imports their runtime closure — which means nix has to be
+installed there.
+
+### Working on a recording
+
+`dtk data <verb>` is one namespace for everything that operates on a recording, and every verb
+works out for itself whether it was handed a memory2 `.db` or an `.mcap` by looking at the file's
+first bytes rather than its name.
+
+```sh
+dtk data summary <recording>
+dtk data heatmap <recording> [out.png]
+dtk data to_rrd <recording>              # cached, and opened in rerun
+dtk data to_mcap <recording.db>
+dtk data to_db <recording.mcap>
+dtk data to_video <recording.db> <stream>
+dtk data lcm_to_cdr <recording.mcap>
+dtk data check <recording.mcap>
+
+dtk data topic rename <recording> <old> <new>
+dtk data topic delete <recording> <topic>
+dtk data topic copy --from A --to B --topic NAME
+
+dtk data tf tree <recording>
+dtk data tf full_check <recording>
+dtk data tf rename <recording> <old> <new>
+dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]
+```
+
+### Python
+
+Every python tool runs through one resolver, and `dtk python` exposes it:
+
+```sh
+dtk python <script.py> [args...]     # uv run, under the project that owns the script
+dtk python --where <script.py>       # just say which project that is
+```
+
+The project is found by walking up from the script, then from the working directory, for
+`uv.lock`, `pyproject.toml` or `.venv`. A tool that needs dimos says which module it imports, and
+dtk finds the checkout that has it — so `db_to_mcap` works without `DIMOS_REPO` set by hand.
+
+```sh
+dtk graph <blueprints.py>   # render a file's DimOS Blueprints in the browser
+dtk gen_blue                # regenerate all_blueprints.py; only inside a dimos checkout
+```
 
 ### Managing what is downloaded
 

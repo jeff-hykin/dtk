@@ -1,5 +1,6 @@
 // Where sub-tools live once they have been downloaded, and how they get there.
 
+import { runPython } from "./python.js"
 import { version } from "./version.js"
 
 // Running from a checkout, this is a file:// url and the tools are simply used
@@ -95,10 +96,6 @@ async function ensureScript(tool, { force }) {
         const to = localPathOf(relativePath)
         Deno.mkdirSync(to.replace(/\/[^/]+$/, ""), { recursive: true })
         Deno.writeFileSync(to, new Uint8Array(await response.arrayBuffer()))
-    }
-    if (tool.kind === "exec") {
-        // it carries its own shebang; the kernel takes it from there
-        Deno.chmodSync(localPathOf(tool.entry), 0o755)
     }
     Deno.writeTextFileSync(stampOf(tool), currentStamp(tool))
     return localPathOf(tool.entry)
@@ -230,6 +227,30 @@ async function downloadWithGh(tool, assetName, temporaryPath, status) {
 export async function runTool(tool, args) {
     const path = await ensureDownloaded(tool)
     let command = null
+    if (tool.kind === "python") {
+        // Paths among the arguments are where the walk up for a project starts,
+        // so `dtk graph some/repo/thing.py` uses that repo's environment
+        // whatever directory it was typed from.
+        const startPaths = args.filter((each) => {
+            if (each.startsWith("-")) {
+                return false
+            }
+            try {
+                Deno.statSync(each)
+                return true
+            } catch (error) {
+                return false
+            }
+        })
+        return await runPython({
+            script: path,
+            args,
+            startPaths,
+            needsDimosModule: tool.needsDimosModule ?? null,
+            withPackages: tool.withPackages ?? [],
+            verbose: Deno.env.get("DTK_VERBOSE") === "1",
+        })
+    }
     if (tool.kind === "deno") {
         command = new Deno.Command(Deno.execPath(), {
             args: ["run", ...(tool.permissions || ["--allow-all"]), path, ...args],

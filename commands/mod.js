@@ -3,6 +3,8 @@
 
 import data from "./data.js"
 import doctor from "./doctor.js"
+import genBlue from "./gen_blue.js"
+import python from "./python.js"
 import list from "./list.js"
 import remove from "./remove.js"
 import update from "./update.js"
@@ -10,6 +12,8 @@ import where from "./where.js"
 
 export const commands = [
     data,
+    python,
+    genBlue,
     list,
     update,
     remove,

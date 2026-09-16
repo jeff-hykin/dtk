@@ -63,6 +63,42 @@ one of the two, it says so and stops rather than half-working.
     - open it at the end with a globally installed `rerun`
     - if there is no global `rerun`, offer to install one rather than failing
 
+## `dtk data add` — replay a module over a recording
+
+Mutates the recording in place: replays the named inputs at 1x speed into the module and writes
+the module's outputs back into the same `.db` / `.mcap`.
+
+```sh
+dtk data add <db_or_mcap_file> '[
+    {
+        "module": "<path to module python file>:<ModuleName>",
+        "inputs": {"lidar": "pointlio_lidar"},
+        "tf_remappings": {},
+        "outputs": {"global_map": "global_map"},
+        "overwrite": true
+    }
+]'
+```
+
+- [ ] parse the json, resolve `path.py:ModuleName`, and run it through the shared `dtk python`
+      project resolution
+- [ ] replay the mapped inputs at 1x, wall-clock, so a module with timers behaves as it would live
+- [ ] write the mapped outputs back into the recording
+- [ ] `overwrite`: before the replay, rename each stream that would be overwritten to
+      `_delete_me_<name>`, point the replay's inputs at the renamed one where it is also an input,
+      and drop the `_delete_me_` streams once the replay finishes. Nothing is destroyed until the
+      new data exists.
+- [ ] `--from`/`--to` (or equivalent) to replay only a section of time
+- [ ] a topic-namespace prefix option, so one recording can hold several runs of the same module
+- [ ] `tf_remappings`: decide the shape — frame renames applied to what the module sees, written
+      back under the original names?
+
+Open questions for Jeff:
+- What runs the module — `dimos run`, the module coordinator, or a bare `Module` instance driven
+  by this command?
+- 1x is the default; is a `--speed` (or `--as-fast-as-possible`) wanted for a module with no timers?
+- If the replay dies halfway, does the recording keep the partial output or roll back?
+
 ## Tools registered in dtk
 
 All of the above are registered: `db_cp`, `db_delete`, `db_tree`, `db_to_rrd`, `mcap_edit`,
@@ -73,11 +109,17 @@ Also in `~/Commands` and not yet asked for: `mcap_recover`, `rrd_summary`, `rrd_
 
 ## Known rough edges
 
-- [x] `db_to_mcap` probes `~/repos/dimos` first, and that clone has no `memory2`, so it needs
-      `DIMOS_REPO` set by hand. Probe for the module, not just the directory.
-- [x] `mcap_lcm_to_cdr` hardcoded `/Users/jeffhykin/repos/dimos` in its shebang; dtk's copy probes
-      for the module instead. `mcap_depth_viewable` and `replay_map` still do, and are not
-      registered yet.
+- [x] Every python tool now goes through one resolver (`python.js`): walk up from the paths in
+      the arguments, then from the working directory, for `uv.lock` / `pyproject.toml` / `.venv`,
+      and for a tool that names a `needsDimosModule`, fall back to probing the dimos clones for
+      that module. `dtk python <script.py>` exposes it directly, `--where` just prints the answer.
+      That is what fixed `db_to_mcap` needing `DIMOS_REPO` set by hand.
+- [x] `mcap_lcm_to_cdr` hardcoded `/Users/jeffhykin/repos/dimos` in its shebang; no dtk python
+      tool carries a shebang any more. `mcap_depth_viewable` and `replay_map` still do, and are
+      not registered yet.
+- [x] `dimos_graph` imported `dimos.core.blueprints`, which moved to
+      `dimos.core.coordination.blueprints` — it could not have run. Fixed in dtk's copy (`dtk
+      graph`); `~/Commands/dimos_graph.py` still has the stale import.
 - [ ] `heatmap` dies on a recording whose `PointCloud2` fingerprint predates `@dimos/msgs@0.1.4`
       (e.g. `spot_small_loop.db`). Same failure from `~/Commands/heatmap`, so it is the tool.
 - [ ] Linux `icp_stitch` needs glibc 2.34, so an Ubuntu 20.04 / L4T 35 target is out.
