@@ -29,6 +29,7 @@ import importlib
 import importlib.util
 import json
 import os
+import re
 import sqlite3
 import sys
 import threading
@@ -173,6 +174,11 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=30.0, metavar="SECONDS",
                         help="how long to wait after the replay ends for the last "
                              "outputs to arrive")
+    parser.add_argument("--in-process", action="store_true",
+                        help="build the modules here instead of asking the coordinator to spin "
+                             "them up in worker processes. This is what happens anyway when the "
+                             "coordinator cannot deploy, and it is the only thing that works "
+                             "where its worker dies on startup")
     parser.add_argument("--dry-run", action="store_true",
                         help="say what would happen and touch nothing")
     parser.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
@@ -223,6 +229,15 @@ def main() -> None:
     for name, moved in to_rename.items():
         print(f"  {name} -> {moved}, dropped once the replay finishes")
 
+    # Checked before anything is moved: memory2 only accepts identifier-shaped
+    # stream names, and finding that out after the renames would leave the
+    # recording half-rearranged.
+    bad = [name for plan in plans for name in plan["outputs"].values()
+           if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)]
+    if bad:
+        sys.exit(f"these are not usable stream names: {', '.join(sorted(set(bad)))}\n"
+                 f"letters, digits and _ only — a namespace like \"run1_\" works, \"run1/\" does not")
+
     missing = [name for plan in plans for name in plan["inputs"].values() if name not in present]
     if missing:
         sys.exit(f"these input streams are not in the recording: {', '.join(sorted(set(missing)))}")
@@ -239,6 +254,7 @@ def main() -> None:
     # Imported here rather than at the top so `--help` and `--dry-run` work without a
     # dimos environment behind them.
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
+    from dimos.core.global_config import global_config
     from dimos.core.transport import LCMTransport
     from dimos.memory2.store.sqlite import SqliteStore
 
@@ -250,8 +266,31 @@ def main() -> None:
         print(f"moved {len(to_rename)} stream(s) out of the way")
 
     store = SqliteStore(path=str(arguments.recording))
-    coordinator = ModuleCoordinator()
-    coordinator.start()
+    coordinator = None
+    if not arguments.in_process:
+        coordinator = ModuleCoordinator()
+        coordinator.start()
+
+    def build(module_class):
+        """Deployed through the coordinator when it can, built here when it cannot.
+
+        Its worker is a separate process that the class is pickled over to, and
+        when that process dies on startup the only thing that comes back is an
+        EOF. Falling back keeps the command usable rather than making the whole
+        replay depend on a part of dimos that is not this command's job."""
+        nonlocal coordinator
+        if coordinator is not None:
+            try:
+                return coordinator.deploy(module_class)
+            except Exception as error:
+                print(f"the coordinator could not deploy {module_class.__name__}: {error}")
+                print("building it here instead; pass --in-process to skip this attempt")
+                try:
+                    coordinator.stop()
+                except Exception:
+                    pass
+                coordinator = None
+        return module_class(g=global_config)
     written = {name: 0 for plan in plans for name in plan["outputs"].values()}
     deployed = []
 
@@ -269,7 +308,7 @@ def main() -> None:
         for index, plan in enumerate(plans):
             module_class = load_class(plan["spec"]["module"])
             payload_types = stream_payload_types(module_class)
-            module = coordinator.deploy(module_class)
+            module = build(module_class)
             deployed.append(module)
             channel = f"/dtk_add/{index}"
 
@@ -312,8 +351,15 @@ def main() -> None:
             done = threading.Event()
             finished.append(done)
 
-            def send(observation, transport=transport, remappings=remappings):
-                transport.publish(remap_frame(observation.data, remappings))
+            sent = {"count": 0}
+
+            # A ReplayStream's observable emits the decoded payload itself, not an
+            # Observation wrapping it.
+            def send(payload, transport=transport, remappings=remappings, sent=sent):
+                transport.publish(remap_frame(payload, remappings))
+                sent["count"] += 1
+                if sent["count"] % 50 == 0:
+                    print(f"    sent {sent['count']:,}")
 
             replay.stream(source).observable().subscribe(
                 on_next=send,
@@ -322,9 +368,15 @@ def main() -> None:
             )
             print(f"  replaying {source} at {arguments.speed}x")
 
+        # A bounded wait: a replay that never completes -- a source that stalls, a
+        # subscription that never fires on_completed -- must not hang the command
+        # for ever with a half-rewritten recording behind it.
+        ceiling = time.monotonic() + max(arguments.timeout, 60.0)
         for done in finished:
-            done.wait()
-        print("replay finished; waiting for the last outputs")
+            if not done.wait(max(1.0, ceiling - time.monotonic())):
+                print("the replay did not finish in time; stopping with what arrived")
+                break
+        print(f"replay done; arrivals so far: {written}")
         settled = time.monotonic()
         last = dict(written)
         while time.monotonic() - settled < min(arguments.timeout, 5.0):
@@ -338,7 +390,8 @@ def main() -> None:
                 module.stop()
             except Exception as error:
                 print(f"could not stop a module cleanly: {error}")
-        coordinator.stop()
+        if coordinator is not None:
+            coordinator.stop()
         store.stop()
 
     for target, count in written.items():

@@ -80,24 +80,30 @@ dtk data add <db_or_mcap_file> '[
 ]'
 ```
 
-- [ ] parse the json, resolve `path.py:ModuleName`, and run it through the shared `dtk python`
-      project resolution
-- [ ] replay the mapped inputs at 1x, wall-clock, so a module with timers behaves as it would live
-- [ ] write the mapped outputs back into the recording
-- [ ] `overwrite`: before the replay, rename each stream that would be overwritten to
+- [x] parse the json, resolve `path.py:ModuleName`, and run it through the shared `dtk python`
+      project resolution. The class is imported under its REAL dotted name, not a synthetic one:
+      the coordinator pickles it to a worker and a pickled class travels as module-name plus
+      qualname.
+- [x] replay the mapped inputs at 1x, through `Store.replay(speed=...)`
+- [x] write the mapped outputs back into the recording
+- [x] `overwrite`: before the replay, rename each stream that would be overwritten to
       `_delete_me_<name>`, point the replay's inputs at the renamed one where it is also an input,
       and drop the `_delete_me_` streams once the replay finishes. Nothing is destroyed until the
-      new data exists.
-- [ ] `--from`/`--to` (or equivalent) to replay only a section of time
-- [ ] a topic-namespace prefix option, so one recording can hold several runs of the same module
-- [ ] `tf_remappings`: decide the shape — frame renames applied to what the module sees, written
-      back under the original names?
+      new data exists — and if a stream produced nothing, the old one is KEPT and said so.
+- [x] `--from` and `--duration`, plus `--speed`
+- [x] `--namespace`. memory2 only accepts identifier-shaped stream names, so `run1_` works and
+      `run1/` does not; that is checked before anything is renamed.
+- [x] `tf_remappings` is `{"old": "new"}`, rewriting `header.frame_id` on the way INTO the
+      module and leaving the output as the module wrote it.
+    - [ ] not exercised by a test yet — the module used for testing has nothing to remap
 
-Open questions for Jeff:
-- What runs the module — `dimos run`, the module coordinator, or a bare `Module` instance driven
-  by this command?
-- 1x is the default; is a `--speed` (or `--as-fast-as-possible`) wanted for a module with no timers?
-- If the replay dies halfway, does the recording keep the partial output or roll back?
+Answered: the coordinator spins the modules up. **But `ModuleCoordinator.deploy()` kills its
+worker on both machines tested** — EOFError on the Mac (dimos3 and dimos6), ConnectionResetError
+on CudaLaptop (dimos6) — with a plain script and no dtk involved. So `data add` falls back to
+building the module in this process, loudly, and `--in-process` skips the attempt. That fallback
+is the path that is actually tested.
+
+- [ ] revisit once `ModuleCoordinator.deploy()` works again, and verify the coordinator path
 
 ## Tools registered in dtk
 
