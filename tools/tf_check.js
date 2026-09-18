@@ -292,11 +292,14 @@ if (isMcap) {
     tfChannels = onlyCanonical(tfChannels, (each) => each.name)
     const tfTopics = new Set(tfChannels.map((each) => each.channel.topic))
     for (const channel of reader.channelsById.values()) {
-        if (tfTopics.has(channel.topic) || channel.messageEncoding !== "cdr") {
+        if (tfTopics.has(channel.topic)) {
             continue
         }
+        // An mcap is usually CDR, but lite_record can carry raw LCM channels
+        // too, and skipping those left every one of them unchecked.
+        const read = channel.messageEncoding === "cdr" ? readCdrFrameId : readLcmFrameId
         for await (const message of reader.readMessages({ topics: [channel.topic] })) {
-            const frame = readCdrFrameId(new Uint8Array(message.data))
+            const frame = read(new Uint8Array(message.data))
             if (frame !== null) {
                 headerFrames.set(channel.topic.replace(/^\//, ""), frame)
             }
@@ -349,8 +352,14 @@ if (isMcap) {
         (row) => row.name,
     )
     const tfNames = new Set(tfRows.map((row) => row.name))
+    // Not every stream keeps its payload in a sibling _blob table -- the
+    // hyperspace ones do not -- and asking for one that is absent throws.
+    const blobTables = new Set(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%_blob'")
+            .all().map((row) => row.name),
+    )
     for (const row of streamRows) {
-        if (tfNames.has(row.name) || codecOf(row).startsWith("lz4")) {
+        if (tfNames.has(row.name) || !blobTables.has(`${row.name}_blob`)) {
             continue
         }
         const first = db.prepare(
@@ -358,7 +367,18 @@ if (isMcap) {
              JOIN "${row.name}_blob" AS b ON b.id = s.id LIMIT 1`,
         ).get()
         if (first) {
-            const frame = readLcmFrameId(first.data)
+            // The bulky streams are the lz4 ones -- images, clouds -- and they
+            // were skipped rather than decompressed, so the streams most worth
+            // placing were the ones never checked.
+            let bytes = first.data
+            if (codecOf(row).startsWith("lz4")) {
+                try {
+                    bytes = new Uint8Array(lz4.decompress(bytes))
+                } catch (error) {
+                    continue
+                }
+            }
+            const frame = readLcmFrameId(bytes)
             if (frame !== null) {
                 headerFrames.set(row.name, frame)
             }
