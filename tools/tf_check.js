@@ -196,21 +196,30 @@ const readCdrFrameId = (data) => {
 
 const readLcmFrameId = (data) => {
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-    // fingerprint(8) + either seq+sec+nsec or sec+nsec, then the string
-    for (const at of [20, 16]) {
+    // After the fingerprint come seq, the stamp, and the frame -- but the
+    // generated classes hoist each variable-length array's size field ahead of
+    // the array, so how far in the frame sits depends on the message: a
+    // CompressedImage puts it at 24 and a PointCloud2, which carries two such
+    // sizes, at 28. Hence a scan rather than one offset.
+    //
+    // An LCM string counts its own terminator, so the last byte of a real one
+    // is NUL. Requiring that is what separates a frame from a stray int whose
+    // low byte happens to be printable: a PointCloud2's height of 1 was being
+    // read as a one-character frame named "j" (0x6a), which is frame-shaped and
+    // was reported against every cloud stream as unplaced.
+    for (const at of [12, 16, 20, 24, 28, 32]) {
         if (at + 4 > data.length) {
             continue
         }
         const length = view.getInt32(at, false)
-        if (length < 1 || length > 120 || at + 4 + length > data.length) {
+        if (length < 2 || length > 120 || at + 4 + length > data.length) {
             continue
         }
         const bytes = data.slice(at + 4, at + 4 + length)
-        let end = bytes.length
-        while (end > 0 && bytes[end - 1] === 0) {
-            end--
+        if (bytes[bytes.length - 1] !== 0) {
+            continue
         }
-        const text = new TextDecoder().decode(bytes.slice(0, end))
+        const text = new TextDecoder().decode(bytes.slice(0, bytes.length - 1))
         if (FRAME_SHAPED.test(text)) {
             return text
         }
