@@ -35,7 +35,7 @@ Everything after the tool name is handed to the tool untouched.
 | --- | --- |
 | `db_summary` | Per-stream counts, rates, gaps and the tf frame tree of a memory2 `.db` or an `.mcap` |
 | `urdf_edit` | View and edit URDF frames in the browser |
-| `heatmap` | Top-down density heatmap of a recording, with the odometry path over it |
+| `heatmap` | Top-down render of a recording: the finished global_map by default (or a scan stream placed through tf), with the trajectory over it |
 | `to_video` | Turn an image stream in a memory2 recording into an mp4 |
 | `db_to_mcap` | Convert a memory2 `.db` into a ROS 2 `.mcap` (needs a dimos checkout and `uv`) |
 | `mcap_to_db` | Copy ROS 2 topics out of an `.mcap` into a memory2 `.db`, re-encoded as LCM |

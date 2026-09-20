@@ -1,7 +1,13 @@
 #!/usr/bin/env -S deno run --allow-read --allow-write --allow-net --allow-env --allow-ffi --unstable-ffi
 
 // heatmap — top-down dark render of a recording: a point cloud stream as a
-// density heatmap, with the odometry path over it coloured start-to-end.
+// density heatmap, with the trajectory over it coloured start-to-end.
+//
+// Everything is placed through tf and nothing else. The tf tree's root is the
+// world; the root's moving child edge (odom -> base_link) is the trajectory;
+// a per-scan cloud is carried into the world through the chain from the frame
+// its own header names, interpolated to the scan's time. A finished map
+// (global_map) already sits in the world frame and is drawn as it is.
 // Reads either a memory2 .db or an .mcap.
 
 import { Database } from "jsr:@db/sqlite@0.12"
@@ -167,9 +173,10 @@ function sqliteSource(path) {
         count(stream) {
             return db.prepare(`SELECT COUNT(*) FROM ${stream}`).values()[0][0]
         },
-        read(stream, kind, stride = 1) {
+        read(stream, kind, stride = 1, { last = false } = {}) {
             const rows = db.prepare(
-                `SELECT o.ts, b.data FROM ${stream}_blob b JOIN ${stream} o ON o.id = b.id ORDER BY o.ts`,
+                `SELECT o.ts, b.data FROM ${stream}_blob b JOIN ${stream} o ON o.id = b.id ORDER BY o.ts` +
+                    (last ? " DESC LIMIT 1" : ""),
             ).values()
             const out = []
             for (let index = 0; index < rows.length; index += stride) {
@@ -230,11 +237,22 @@ async function mcapSource(path) {
         count(stream) {
             return Number(reader.statistics?.channelMessageCounts.get(channelFor(stream).id) ?? 0)
         },
-        async read(stream, kind, stride = 1) {
+        async read(stream, kind, stride = 1, { last = false } = {}) {
             const channel = channelFor(stream)
             const decode = channel.messageEncoding === "cdr" ? CDR_DECODERS[kind] : LCM_DECODERS[kind]
             if (channel.messageEncoding !== "cdr" && channel.messageEncoding !== "lcm") {
                 throw new Error(`topic ${stream} is ${channel.messageEncoding}, which heatmap cannot decode`)
+            }
+            if (last) {
+                // Only the newest message is wanted, so nothing before it is decoded:
+                // a map's snapshots are each tens of megabytes, and there are hundreds.
+                let newest
+                for await (const message of reader.readMessages({ topics: [channel.topic] })) {
+                    if (newest === undefined || message.logTime > newest.logTime) {
+                        newest = message
+                    }
+                }
+                return newest ? [{ ts: Number(newest.logTime) / 1e9, message: decode(newest.data) }] : []
             }
             const out = []
             let index = 0
@@ -341,17 +359,119 @@ function tfTimeline(samples) {
     return timeline
 }
 
+/** Index of the first sample at or after `ts` (binary search on a ts-sorted list). */
+function lowerBound(list, ts) {
+    let lo = 0
+    let hi = list.length
+    while (lo < hi) {
+        const mid = (lo + hi) >> 1
+        if (list[mid].ts < ts) { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+/** Spherical interpolation between xyzw quaternions, along the short way round. */
+function slerp(a, b, f) {
+    let dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]
+    let bb = b
+    if (dot < 0) {
+        dot = -dot
+        bb = b.map((v) => -v)
+    }
+    if (dot > 0.9995) {
+        const out = a.map((v, i) => v + (bb[i] - v) * f)
+        const n = Math.hypot(...out)
+        return out.map((v) => v / n)
+    }
+    const theta = Math.acos(dot)
+    const wa = Math.sin((1 - f) * theta) / Math.sin(theta)
+    const wb = Math.sin(f * theta) / Math.sin(theta)
+    return a.map((v, i) => v * wa + bb[i] * wb)
+}
+
+/** The edge's transform at `ts`: interpolated between the samples around it,
+ * the nearest end outside them. A scan at 10 Hz between two tf samples is
+ * placed with an orientation up to 50 ms stale by a nearest lookup, which on
+ * a fast turn fans the scan into rings around the corner. */
+function edgeAt(samples, ts) {
+    const at = lowerBound(samples, ts)
+    const after = samples[Math.min(at, samples.length - 1)]
+    const before = samples[Math.max(at - 1, 0)]
+    if (after === before || after.parent !== before.parent || after.ts === before.ts) {
+        return Math.abs(before.ts - ts) <= Math.abs(after.ts - ts) ? before : after
+    }
+    const f = Math.min(1, Math.max(0, (ts - before.ts) / (after.ts - before.ts)))
+    return {
+        parent: before.parent,
+        transform: {
+            t: before.transform.t.map((v, i) => v + (after.transform.t[i] - v) * f),
+            q: slerp(before.transform.q, after.transform.q, f),
+        },
+    }
+}
+
 /** Walk `frame` up to the root of the tf tree at time `ts`, giving {transform, root}. */
-function chainToRoot(timeline, frame, ts, nearest) {
+function chainToRoot(timeline, frame, ts) {
     let out = IDENTITY
     const seen = new Set()
     while (timeline[frame] && !seen.has(frame)) {
         seen.add(frame)
-        const edge = nearest(timeline[frame], ts)
+        const edge = edgeAt(timeline[frame], ts)
         out = compose(edge.transform, out)
         frame = edge.parent
     }
     return { transform: out, root: frame }
+}
+
+/** The frames that are only ever parents: the world frame, or several if the tree is split. */
+function tfRoots(timeline) {
+    const children = new Set(Object.keys(timeline))
+    const parents = new Set()
+    for (const samples of Object.values(timeline)) {
+        for (const sample of samples) {
+            parents.add(sample.parent)
+        }
+    }
+    return [...parents].filter((frame) => !children.has(frame)).sort()
+}
+
+/** The trajectory: `body`'s pose in the world at each time its own edge was
+ * published, chained up through whatever sits above it (a fixed world -> odom
+ * included). Falls back to the root's child edge that moves the most when the
+ * recording has no such frame, since the static mount edges are republished
+ * too, at a constant transform. */
+function trajectory(timeline, root, body) {
+    if (timeline[body]) {
+        return {
+            child: body,
+            poses: timeline[body].map((sample) => {
+                const chain = chainToRoot(timeline, body, sample.ts)
+                return { ts: sample.ts, x: chain.transform.t[0], y: chain.transform.t[1], z: chain.transform.t[2], q: chain.transform.q }
+            }),
+        }
+    }
+    console.error(`heatmap: no frame ${body} in tf; using the moving edge under ${root} instead`)
+    let best
+    for (const [child, samples] of Object.entries(timeline)) {
+        const under = samples.filter((sample) => sample.parent === root)
+        if (under.length < 2) {
+            continue
+        }
+        const spread = [0, 1, 2].reduce((acc, i) => {
+            const values = under.map((sample) => sample.transform.t[i])
+            return acc + Math.max(...values) - Math.min(...values)
+        }, 0)
+        if (best === undefined || spread > best.spread) {
+            best = { child, spread, samples: under }
+        }
+    }
+    if (best === undefined) {
+        return { child: undefined, poses: [] }
+    }
+    return {
+        child: best.child,
+        poses: best.samples.map((sample) => ({ ts: sample.ts, x: sample.transform.t[0], y: sample.transform.t[1], z: sample.transform.t[2], q: sample.transform.q })),
+    }
 }
 
 /** PointCloud2 -> Float32Array of xyz triples, in whatever frame it was stored. */
@@ -564,12 +684,16 @@ function pickStream(source, kind, requested, preferred = []) {
 await new Command()
     .name("heatmap")
     .version("1.0.0")
-    .description("Top-down dark render of a cloud stream + odometry path from a memory2 .db or an .mcap")
+    .description(
+        "Top-down dark render of a cloud stream + trajectory from a memory2 .db or an .mcap, placed through tf alone. " +
+            "Prefers the finished global_map, drawn as it is at one pixel per voxel; a per-scan stream is carried " +
+            "into the world through the tf chain from the frame each cloud names, interpolated to its time.",
+    )
     .arguments("<recording:string> [output:string]")
-    .option("-w, --width <px:integer>", "Image width in pixels", { default: 1600 })
-    .option("--cloud <stream:string>", "Point cloud stream (default pointlio_lidar, then lidar, then the only PointCloud2 stream)")
-    .option("--odom <stream:string>", "Odometry stream (default pointlio_odometry, then odometry, then the only Odometry stream)")
-    .option("--tf <stream:string>", "Place clouds via this tf stream instead of the odometry pose")
+    .option("-w, --width <px:integer>", "Image width in pixels (default 1600; for a map, one pixel per 0.08 m voxel)")
+    .option("--cloud <stream:string>", "Point cloud stream (default global_map, then pointlio_lidar, then lidar, then the only PointCloud2 stream)")
+    .option("--tf <stream:string>", "The tf stream everything is placed through (default tf)")
+    .option("--body <frame:string>", "The frame whose path is drawn, chained up to the tf root", { default: "base_link" })
     .option("--align-to <stream:string>", "Rigidly align onto this odometry stream's frame")
     .option("--extent <minX_minY_maxX_maxY:string>", "Force the world extent, for comparable renders (commas or underscores)")
     .option("--min-height <m:number>", "Drop points below this world z, in metres")
@@ -578,23 +702,32 @@ await new Command()
     .action(async (options, recording, output) => {
         const target = output ?? recording.replace(/\.(db|mcap)$/, "") + "_heatmap.png"
         const source = recording.endsWith(".mcap") ? await mcapSource(recording) : sqliteSource(recording)
-        options.cloud = pickStream(source, "PointCloud2", options.cloud, ["pointlio_lidar", "lidar"])
-        options.odom = pickStream(source, "Odometry", options.odom, ["pointlio_odometry", "odometry"])
+        options.cloud = pickStream(source, "PointCloud2", options.cloud, ["global_map", "pointlio_lidar", "lidar"])
+        options.tf = pickStream(source, "TFMessage", options.tf, ["tf"])
         if (options.alignTo) {
             options.alignTo = pickStream(source, "Odometry", options.alignTo)
-        }
-        if (options.tf) {
-            options.tf = pickStream(source, "TFMessage", options.tf)
         }
 
         const readOdometry = async (stream) =>
             (await source.read(stream, "Odometry")).map((row) => ({ ts: row.ts, ...odometryPose(row.message) }))
 
-        const odom = await readOdometry(options.odom)
-        if (odom.length === 0) {
-            console.error(`heatmap: no ${options.odom} in ${recording}`)
+        const transforms = (await source.read(options.tf, "TFMessage")).map((row) => ({ ts: row.ts, edges: tfEdges(row.message) }))
+        if (transforms.length === 0) {
+            console.error(`heatmap: no ${options.tf} in ${recording}`)
             Deno.exit(1)
         }
+        const timeline = tfTimeline(transforms)
+        const roots = tfRoots(timeline)
+        if (roots.length !== 1) {
+            console.error(`heatmap: the tf tree has ${roots.length} roots (${roots.join(", ")}); scans under the others are misplaced`)
+        }
+        const world = roots[0]
+        const { child: body, poses: odom } = trajectory(timeline, world, options.body)
+        if (odom.length === 0) {
+            console.error(`heatmap: no moving edge under ${world} in ${options.tf}, so there is no trajectory to draw`)
+            Deno.exit(1)
+        }
+        console.error(`heatmap: world ${world}, trajectory ${world} -> ${body} (${odom.length} poses)`)
 
         // The two SLAM systems have unrelated world origins, so nothing can be
         // compared until one trajectory is carried onto the other's frame.
@@ -626,42 +759,30 @@ await new Command()
             pose.q = moved.q
         }
 
-        // The scans are in the sensor frame, so each one has to be carried into the
-        // world by the pose at its own timestamp. Stacking them raw just draws the
-        // lidar's own field of view over and over on top of itself.
-        const nearest = (list, ts) => {
-            let lo = 0
-            let hi = list.length - 1
-            while (lo < hi) {
-                const mid = (lo + hi) >> 1
-                if (list[mid].ts < ts) { lo = mid + 1 } else { hi = mid }
-            }
-            const previous = list[lo - 1]
-            return previous && Math.abs(previous.ts - ts) < Math.abs(list[lo].ts - ts) ? previous : list[lo]
+        // A finished map already sits in the world frame and its last message is
+        // the whole map, so it is drawn as it is. A per-scan stream is in the
+        // sensor's frame -- not the body's; between them sits the mount, a large
+        // rotation on a handheld rig -- so each scan is carried into the world
+        // through the tf chain from the frame its header names, at its own time.
+        const newest = await source.read(options.cloud, "PointCloud2", 1, { last: true })
+        const cloudFrame = newest[0]?.message.header.frame_id
+        const isMap = cloudFrame !== undefined && cloudFrame === world
+        if (isMap) {
+            console.error(`heatmap: ${options.cloud} is in the world frame ${world}; drawing its last message as the map`)
         }
-
-        // A cloud whose frame is not the odometry body frame (an RTAB-Map keyframe
-        // cloud sits in the camera optical frame) needs the whole tf chain, not a pose.
-        const transforms = options.tf
-            ? (await source.read(options.tf, "TFMessage")).map((row) => ({ ts: row.ts, edges: tfEdges(row.message) }))
-            : []
-        if (options.tf && transforms.length === 0) {
-            console.error(`heatmap: no ${options.tf} in ${recording}`)
-            Deno.exit(1)
-        }
-        const timeline = tfTimeline(transforms)
         const rootCounts = {}
 
         const clouds = []
-        const scanCount = source.count(options.cloud)
-        for (const row of await source.read(options.cloud, "PointCloud2", options.stride)) {
+        const scanCount = isMap ? 1 : source.count(options.cloud)
+        const rows = isMap ? newest : await source.read(options.cloud, "PointCloud2", options.stride)
+        for (const row of rows) {
             let placement
-            if (options.tf) {
-                const chain = chainToRoot(timeline, row.message.header.frame_id, row.ts, nearest)
+            if (isMap) {
+                placement = alignment
+            } else {
+                const chain = chainToRoot(timeline, row.message.header.frame_id, row.ts)
                 rootCounts[chain.root] = (rootCounts[chain.root] ?? 0) + 1
                 placement = compose(alignment, chain.transform)
-            } else {
-                placement = (({ x, y, z, q }) => ({ t: [x, y, z], q }))(nearest(odom, row.ts))
             }
             const cloud = cloudXyz(row.message)
             for (let i = 0; i < cloud.length; i += 3) {
@@ -676,12 +797,12 @@ await new Command()
 
         // Every scan should reach the same root. More than one means the tf tree is
         // broken somewhere, and those scans are drawn short of the world frame.
-        const roots = Object.entries(rootCounts).sort((a, b) => b[1] - a[1])
-        if (roots.length > 0) {
-            console.error(`heatmap: tf roots ${roots.map(([f, n]) => `${f} x${n}`).join(", ")}`)
+        const reached = Object.entries(rootCounts).sort((a, b) => b[1] - a[1])
+        if (reached.length > 0) {
+            console.error(`heatmap: tf roots ${reached.map(([f, n]) => `${f} x${n}`).join(", ")}`)
         }
-        if (roots.length > 1) {
-            console.error(`heatmap: tf tree is disconnected — scans under ${roots.slice(1).map(([f]) => f).join(", ")} are misplaced`)
+        if (reached.length > 1) {
+            console.error(`heatmap: tf tree is disconnected — scans under ${reached.slice(1).map(([f]) => f).join(", ")} are misplaced`)
         }
 
         // Report the z distribution, because "chop above 2 m" is unanswerable
@@ -730,13 +851,27 @@ await new Command()
         if (options.extent) {
             [minX, minY, maxX, maxY] = options.extent.split(/[,_]/).map(Number)
         }
+        let width = options.width ?? 1600
+        if (isMap && options.width === undefined && !options.extent) {
+            // A map is voxels, so draw one pixel per voxel with the grid snapped to
+            // the voxel edges; any other pitch beats against the grid as moire.
+            const voxel = 0.08
+            minX = Math.floor(minX / voxel) * voxel
+            minY = Math.floor(minY / voxel) * voxel
+            width = Math.min(4096, Math.round((maxX - minX) / voxel))
+            maxX = minX + width * voxel
+            maxY = minY + Math.round((maxY - minY) / voxel) * voxel
+        }
         console.log(`heatmap: extent ${[minX, minY, maxX, maxY].map((v) => v.toFixed(2)).join(",")}`)
-        const width = options.width
         const scale = width / (maxX - minX)
         const height = Math.max(1, Math.round((maxY - minY) * scale))
+        // A map's points are voxel centres, half a pixel in from the snapped grid,
+        // so they are floored onto their voxel; rounding would flip on float noise
+        // and alias the grid. Scans and the path round to the nearest pixel.
+        const pixel = isMap ? Math.floor : Math.round
         const toPx = (x, y) => [
-            Math.round((x - minX) * scale),
-            height - 1 - Math.round((y - minY) * scale),
+            pixel((x - minX) * scale),
+            height - 1 - pixel((y - minY) * scale),
         ]
 
         // Accumulate hits per pixel, then map density through a log ramp: a single
