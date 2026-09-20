@@ -315,11 +315,31 @@ function compose(parent, child) {
     }
 }
 
-/** TFMessage -> {child_frame -> {parent, transform}}, so a frame can be walked to the root. */
-function tfEdges(message) {
+/** A header's stamp in seconds, whichever decoder shaped it; 0 when it has none.
+ *
+ * The stamp is the instant a message describes; the log time is when the
+ * recorder got it. For a lidar scan those differ by the sweep plus transport,
+ * ~100 ms on a Mid-360, and a deskewed cloud is referenced to its stamp, as
+ * are the odometry's tf edges. Placing a scan at its log time puts it a tenth
+ * of a second down the path and a few degrees round the corner, which smears
+ * every wall into offset copies of itself. */
+function headerSeconds(header) {
+    const stamp = header?.stamp
+    if (stamp === undefined || stamp === null) {
+        return 0
+    }
+    const sec = Number(stamp.sec ?? 0)
+    const nanos = Number(stamp.nanosec ?? stamp.nsec ?? 0)
+    return sec + nanos / 1e9
+}
+
+/** TFMessage -> {child_frame -> {ts, parent, transform}}, so a frame can be walked to the root.
+ * Each edge keeps its own stamp; `fallbackTs` (the message's log time) stands in for an unstamped one. */
+function tfEdges(message, fallbackTs) {
     const edges = {}
     for (const stamped of message.transforms) {
         edges[stamped.child_frame_id] = {
+            ts: headerSeconds(stamped.header) || fallbackTs,
             parent: stamped.header.frame_id,
             transform: {
                 t: [
@@ -350,7 +370,7 @@ function tfTimeline(samples) {
     for (const { ts, edges } of samples) {
         for (const [child, edge] of Object.entries(edges)) {
             timeline[child] ??= []
-            timeline[child].push({ ts, parent: edge.parent, transform: edge.transform })
+            timeline[child].push({ ts: edge.ts ?? ts, parent: edge.parent, transform: edge.transform })
         }
     }
     for (const samplesForChild of Object.values(timeline)) {
@@ -711,7 +731,7 @@ await new Command()
         const readOdometry = async (stream) =>
             (await source.read(stream, "Odometry")).map((row) => ({ ts: row.ts, ...odometryPose(row.message) }))
 
-        const transforms = (await source.read(options.tf, "TFMessage")).map((row) => ({ ts: row.ts, edges: tfEdges(row.message) }))
+        const transforms = (await source.read(options.tf, "TFMessage")).map((row) => ({ ts: row.ts, edges: tfEdges(row.message, row.ts) }))
         if (transforms.length === 0) {
             console.error(`heatmap: no ${options.tf} in ${recording}`)
             Deno.exit(1)
@@ -780,7 +800,8 @@ await new Command()
             if (isMap) {
                 placement = alignment
             } else {
-                const chain = chainToRoot(timeline, row.message.header.frame_id, row.ts)
+                // At the scan's own instant, not its arrival at the recorder.
+                const chain = chainToRoot(timeline, row.message.header.frame_id, headerSeconds(row.message.header) || row.ts)
                 rootCounts[chain.root] = (rootCounts[chain.root] ?? 0) + 1
                 placement = compose(alignment, chain.transform)
             }
