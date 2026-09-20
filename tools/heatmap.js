@@ -738,10 +738,18 @@ await new Command()
         }
         const timeline = tfTimeline(transforms)
         const roots = tfRoots(timeline)
+        // The world is the root the clouds chain up to. A recording can carry a
+        // second tree (a static camera tree under base_link, say) that never
+        // joins the odometry's; picking a root by name would draw everything
+        // in that one's frame.
+        const probe = await source.read(options.cloud, "PointCloud2", 1, { last: true })
+        const probeFrame = probe[0]?.message.header.frame_id
+        const world = probeFrame === undefined
+            ? roots[0]
+            : chainToRoot(timeline, probeFrame, headerSeconds(probe[0].message.header) || probe[0].ts).root
         if (roots.length !== 1) {
-            console.error(`heatmap: the tf tree has ${roots.length} roots (${roots.join(", ")}); scans under the others are misplaced`)
+            console.error(`heatmap: the tf tree has ${roots.length} roots (${roots.join(", ")}); ${options.cloud} reaches ${world}, so that is the world`)
         }
-        const world = roots[0]
         const { child: body, poses: odom } = trajectory(timeline, world, options.body)
         if (odom.length === 0) {
             console.error(`heatmap: no moving edge under ${world} in ${options.tf}, so there is no trajectory to draw`)
@@ -784,8 +792,8 @@ await new Command()
         // sensor's frame -- not the body's; between them sits the mount, a large
         // rotation on a handheld rig -- so each scan is carried into the world
         // through the tf chain from the frame its header names, at its own time.
-        const newest = await source.read(options.cloud, "PointCloud2", 1, { last: true })
-        const cloudFrame = newest[0]?.message.header.frame_id
+        const newest = probe
+        const cloudFrame = probeFrame
         const isMap = cloudFrame !== undefined && cloudFrame === world
         if (isMap) {
             console.error(`heatmap: ${options.cloud} is in the world frame ${world}; drawing its last message as the map`)
