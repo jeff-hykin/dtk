@@ -3,6 +3,7 @@ import { DtkError } from "../errors.js"
 import { toolsByName } from "../registry.js"
 import { runPython } from "../python.js"
 import { ensureDownloaded, sourceBase } from "../tool_store.js"
+import { newestBlueprint } from "../runs.js"
 
 // `dtk constellation` — the LCM Constellation app, without the dim desktop.
 //
@@ -16,55 +17,6 @@ import { ensureDownloaded, sourceBase } from "../tool_store.js"
 // `urdf_edit` does: `{data: [kind, payload]}` in both directions.
 
 const GRAPH_RESCAN_MS = 4000
-
-const RUNS_DIR = `${Deno.env.get("HOME") ?? "."}/.local/state/dimos/runs`
-
-function alivePids() {
-    try {
-        const { stdout } = new Deno.Command("ps", {
-            args: ["-eo", "pid="],
-            stdout: "piped",
-            stderr: "null",
-        }).outputSync()
-        return new Set(
-            new TextDecoder().decode(stdout)
-                .split("\n")
-                .map((each) => Number(each.trim()))
-                .filter(Boolean),
-        )
-    } catch (error) {
-        return new Set()
-    }
-}
-
-// The dimos run registry is the canonical record of what is running -- the same
-// files `dimos stop` reads -- so the blueprint on screen is the one on the wire.
-function runningBlueprint() {
-    const live = alivePids()
-    const entries = []
-    let names = []
-    try {
-        names = [...Deno.readDirSync(RUNS_DIR)].map((each) => each.name).filter((each) => each.endsWith(".json"))
-    } catch (error) {
-        return null
-    }
-    for (const name of names) {
-        try {
-            const record = JSON.parse(Deno.readTextFileSync(`${RUNS_DIR}/${name}`))
-            if (typeof record?.blueprint !== "string" || !record?.pid) {
-                continue
-            }
-            if (!live.has(Number(record.pid))) {
-                continue
-            }
-            entries.push({ name: record.blueprint, started: record.started_at ?? "" })
-        } catch (error) {
-            continue // stale or half-written entry
-        }
-    }
-    entries.sort((left, right) => left.started.localeCompare(right.started))
-    return entries.length > 0 ? entries[entries.length - 1].name : null
-}
 
 async function graphFor(name) {
     if (name === null) {
@@ -128,7 +80,7 @@ export default new Command()
         let graph = { blueprint: "", modules: {}, edges: [] }
         let lastSeen = null
         const rescan = async () => {
-            const name = runningBlueprint()
+            const name = newestBlueprint()
             if (name === lastSeen) {
                 return
             }

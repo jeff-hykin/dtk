@@ -186,6 +186,13 @@ export const tools = [
         needsDimosModule: "dimos/robot/get_all_blueprints.py",
     },
     {
+        name: "chat_bridge",
+        kind: "python",
+        description: "Carry /agent and /human_input between zenoh and `dtk chat`",
+        entry: "tools/chat_bridge.py",
+        needsDimosModule: "dimos/core/transport_factory.py",
+    },
+    {
         name: "blueprint_graph",
         kind: "python",
         description: "Print a blueprint's module/topic graph as json",
