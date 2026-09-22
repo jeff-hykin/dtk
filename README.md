@@ -42,6 +42,7 @@ Everything after the tool name is handed to the tool untouched.
 | `web_ctrl` | Web control panel and live viewer for a robot over zenoh |
 | `lite_record` | Handheld multi-sensor mcap recorder for RealSense, Orbbec and Livox Mid-360 |
 | `icp_stitch` | Offline loop-closure post-processing: tag PGO + ICP stitching |
+| `g1_cmd` | Drive a Unitree G1's loco service over DDS: damp, stiffen, self-balance, get up |
 
 `dtk list` has the full set — `db_cp`, `db_delete`, `db_rename`, `db_tree`, `db_to_rrd`,
 `tf_check`, `mcap_edit`, `mcap_check` and `graph` are there too.
@@ -51,6 +52,30 @@ are precompiled binaries pulled from their own repo's latest release, for `x86_6
 `aarch64-linux` and `aarch64-macos`. `lite_record`'s linux builds come out of nix and are not
 static, so dtk also fetches and imports their runtime closure — which means nix has to be
 installed there.
+
+### Driving a G1
+
+`dtk g1_cmd` talks straight to a Unitree G1's loco service over DDS with `unitree_sdk2py`. No
+dimos blueprint has to be running and nothing gets compiled. Run it onboard the Jetson, or from a
+machine plugged into the robot's own `192.168.123.x` LAN (`--iface` picks the interface, default
+`eth0`).
+
+```sh
+dtk g1_cmd                 # status — reads the mode, changes nothing (the default)
+dtk g1_cmd damp            # joints compliant
+dtk g1_cmd getup           # from flat on its back
+dtk g1_cmd stiffen         # joints locked, legs straight, not balancing yet
+dtk g1_cmd balance         # into the advanced controller (needs it stiffened first)
+dtk g1_cmd stand           # stiffen then balance
+dtk g1_cmd limp            # motors off
+```
+
+The advanced controller — the one that walks naturally rather than stomping — cannot be entered
+with `SetFsmId(801)`; the loco service silently refuses it. The only way in is to emulate a held
+`R2`+`A` on `rt/wirelesscontroller` exactly as the physical remote sends it, which `balance` does.
+
+Every action but `status` puts a humanoid under torque control, so `status` is what you get when
+you name none of them.
 
 ### Working on a recording
 

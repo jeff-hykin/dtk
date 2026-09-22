@@ -218,6 +218,16 @@ export const tools = [
         },
     },
     {
+        name: "g1_cmd",
+        kind: "python",
+        description: "Drive a Unitree G1's loco service over DDS: damp, stiffen, self-balance, get up",
+        entry: "tools/g1_cmd.py",
+        // It imports unitree_sdk2py, which is not on pypi — it comes from the
+        // unitree extra of a dimos checkout, so resolve to one that has the G1
+        // connection module and borrow its environment.
+        needsDimosModule: "dimos/robot/unitree/g1/wholebody_connection.py",
+    },
+    {
         name: "web_ctrl",
         kind: "binary",
         description: "Web control panel and live viewer for a robot over zenoh",
