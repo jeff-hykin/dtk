@@ -77,6 +77,37 @@ with `SetFsmId(801)`; the loco service silently refuses it. The only way in is t
 Every action but `status` puts a humanoid under torque control, so `status` is what you get when
 you name none of them.
 
+### Watching the network
+
+When a robot "stops listening", the question is whether the commands were refused or never
+arrived — and after the fact there is usually nothing left to tell you which. `dtk net` records
+the link continuously so the next occurrence has an answer instead of a theory.
+
+```sh
+dtk net install --host G1Wifi   # install + start the recorder there (omit --host for here)
+dtk net status --host G1Wifi    # is it running, how much has it collected
+dtk net log --host G1Wifi -f    # watch the raw lines go by
+dtk net log --host G1Wifi --events   # just the wifi/NetworkManager events
+dtk net report --host G1Wifi    # pull the log down and summarise it
+dtk net uninstall --host G1Wifi # stop it (the logs are kept)
+```
+
+It runs as a `--user` systemd service at `Nice=15` and writes JSONL to
+`~/.dimos/logs/netlog-<date>.jsonl`, one sample a second plus an aggregated line per batch of
+kernel/NetworkManager events, pruned after `--keep-days` (7).
+
+Each sample carries the things that move together during an outage: signal and the
+`/proc/net/wireless` retry counters, per-interface byte deltas, and for every socket on the
+watched ports its **Send-Q**, RTT, congestion window and cumulative retransmits — a control
+socket backing up is the most direct evidence there is that the robot tried to talk and the
+bytes did not leave. Ping to the default gateway runs alongside ping to whoever is connected, so
+"the air is bad" and "the path past the AP is bad" stay distinguishable.
+
+Two things worth knowing, both measured on a G1's Realtek adapter: `iw dev wlan0 station dump`
+returns nothing at all there, so the retry counters come from `/proc/net/wireless` instead; and
+`journalctl -f` block-buffers into a pipe, delivering one chunk and then silence, so events are
+polled with `--cursor-file` rather than followed.
+
 ### Working on a recording
 
 `dtk data <verb>` is one namespace for everything that operates on a recording, and every verb

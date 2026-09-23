@@ -22,6 +22,13 @@ const denoRecordingPermissions = [
 
 export const tools = [
     {
+        name: "net_log",
+        kind: "deno",
+        description: "Record link, socket and system state to JSONL (used by `dtk net`)",
+        entry: "tools/net_log.js",
+        permissions: ["--allow-all"],
+    },
+    {
         name: "db_summary",
         kind: "deno",
         description: "Summarize what is inside a memory2 .db or an .mcap",

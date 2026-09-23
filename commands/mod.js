@@ -7,6 +7,7 @@ import data from "./data.js"
 import doctor from "./doctor.js"
 import fk from "./fk.js"
 import log from "./log.js"
+import net from "./net.js"
 import genBlue from "./gen_blue.js"
 import python from "./python.js"
 import run from "./run.js"
@@ -24,6 +25,7 @@ export const commands = [
     genBlue,
     fk,
     log,
+    net,
     list,
     update,
     remove,
