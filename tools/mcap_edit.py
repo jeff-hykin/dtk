@@ -1722,8 +1722,10 @@ def verify(path):
             raise SystemExit(
                 f"VERIFY FAILED: {topics[channel_id]} has {count} messages, statistics say "
                 f"{stated.get(channel_id)}")
-    for channel_id in stated:
-        if channel_id not in seen:
+    for channel_id, count in stated.items():
+        # a channel registered with zero messages was already empty before any edit
+        # (a stream declared but never written); only a nonzero count is left over
+        if channel_id not in seen and count:
             raise SystemExit(f"VERIFY FAILED: statistics count a channel with no messages left")
     mcap.file.close()
     print(f"verified: {sum(seen.values()):,} messages across {len(seen)} topics, "
