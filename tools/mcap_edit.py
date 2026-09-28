@@ -873,13 +873,15 @@ def main():
                              "the rate tf is already published at. A static edge additionally "
                              "goes on /tf_static, and is republished on /tf about every 0.45 s "
                              "because dimos does not read tf_static yet")
-    parser.add_argument("--copy-topic-from", metavar="OTHER.mcap:TOPIC",
+    parser.add_argument("--copy-topic-from", metavar="OTHER.mcap:TOPIC", action="append", default=[],
                         help="append every message on this topic, from another mcap, into this "
                              "one. Nothing already here moves: the new chunks land where the old "
                              "summary started and a fresh summary is written past them, so it "
                              "costs the size of what is copied rather than the size of the file "
                              "it lands in. The channel and schema are renumbered on the way in. "
-                             "Runs on its own, after any other change")
+                             "Repeatable: several topics are copied one after another and the "
+                             "file is verified once at the end. Runs on its own, after any other "
+                             "change")
     parser.add_argument("--cut-at", type=float, metavar="SECONDS",
                         help="cut the recording in two at this many seconds past its first "
                              "message and write the pieces named by --head and --tail. The "
@@ -927,16 +929,21 @@ def main():
         split(mcap, arguments.recording, arguments.cut_at, arguments.head, arguments.tail)
         return
     if arguments.copy_topic_from:
-        if ":" not in arguments.copy_topic_from:
-            sys.exit(f"--copy-topic-from wants OTHER.mcap:TOPIC, got {arguments.copy_topic_from!r}")
-        other, topic = arguments.copy_topic_from.rsplit(":", 1)
-        mcap = Mcap(arguments.recording)
-        print(f"{arguments.recording.name}: {mcap.size:,} bytes, {len(mcap.chunk_indexes)} chunks, "
-              f"{len(mcap.channels)} channels")
+        for each in arguments.copy_topic_from:
+            if ":" not in each:
+                sys.exit(f"--copy-topic-from wants OTHER.mcap:TOPIC, got {each!r}")
         holders = other_readers(arguments.recording)
         if holders and not arguments.force and not arguments.dry_run:
             sys.exit(f"{', '.join(holders)} has this file open; stop it, or pass --force")
-        copy_topic_in(mcap, other, topic, arguments.dry_run)
+        # Verifying reads every chunk of the file, which on tens of gigabytes costs far
+        # more than the copy itself, so a batch is verified once, after its last copy.
+        for number, each in enumerate(arguments.copy_topic_from, start=1):
+            other, topic = each.rsplit(":", 1)
+            mcap = Mcap(arguments.recording)
+            print(f"{arguments.recording.name}: {mcap.size:,} bytes, {len(mcap.chunk_indexes)} chunks, "
+                  f"{len(mcap.channels)} channels")
+            last = number == len(arguments.copy_topic_from)
+            copy_topic_in(mcap, other, topic, arguments.dry_run, verify_after=last)
         return
 
     if not (renames or deletes or arguments.post_mul_tf_edge or arguments.post_mul_odom
@@ -1294,7 +1301,7 @@ def append_static_tf(mcap, write_at, indexes, edges, static_channel, sibling):
 CHUNK_TARGET = 4 << 20
 
 
-def copy_topic_in(mcap, source_path, topic, dry_run):
+def copy_topic_in(mcap, source_path, topic, dry_run, verify_after=True):
     """Append every message on `topic` from another mcap into this one.
 
     Nothing already in the file moves. The new chunks go where the old summary
@@ -1414,7 +1421,8 @@ def copy_topic_in(mcap, source_path, topic, dry_run):
     os.fsync(mcap.file.fileno())
     mcap.file.close()
     print(f"copied {copied:,} message(s) into {added_chunks} new chunk(s)")
-    verify(mcap.path)
+    if verify_after:
+        verify(mcap.path)
 
 
 # ---------------------------------------------------------------- cutting in two
