@@ -94,9 +94,9 @@ if (dryRun) {
 if (!assumeYes) {
     const ok = confirm(`Delete stream "${stream}"? This cannot be undone.`)
     if (!ok) {
-        console.log("aborted")
+        console.error("aborted: nothing was changed (pass -y to skip the question)")
         db.close()
-        Deno.exit(0)
+        Deno.exit(1)
     }
 }
 

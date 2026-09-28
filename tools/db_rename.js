@@ -104,9 +104,9 @@ if (dryRun) {
 }
 
 if (!assumeYes && !confirm(`Rename stream "${oldName}" to "${newName}"?`)) {
-    console.log("aborted")
+    console.error("aborted: nothing was changed (pass -y to skip the question)")
     db.close()
-    Deno.exit(0)
+    Deno.exit(1)
 }
 
 db.exec("BEGIN")
