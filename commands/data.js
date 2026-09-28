@@ -7,6 +7,7 @@ import { toolsByName } from "../registry.js"
 import { runTool } from "../tool_store.js"
 import { requireFormat } from "../recordings.js"
 import { toRrd } from "../rrd.js"
+import { asFormat, dbToMcap, mcapToDb, splitEncodeFlags } from "../conversions.js"
 
 const wantsHelp = (args) => args.includes("-h") || args.includes("--help")
 
@@ -43,17 +44,34 @@ function perFormat({ name, description, usage, byFormat }) {
             }
             const recording = args[0]
             const format = requireFormat(recording, Object.keys(byFormat), name)
-            const plan = byFormat[format](recording, args.slice(1))
+            const plan = await byFormat[format](recording, args.slice(1))
             if (typeof plan === "string") {
                 console.error(plan)
                 Deno.exit(2)
+            }
+            if (typeof plan === "number") {
+                Deno.exit(plan) // the plan did the work itself
             }
             Deno.exit(await runTool(toolsByName[plan.tool], plan.args))
         })
 }
 
-const notYet = (what) =>
-    `dtk data: ${what} is not implemented yet — see TODO.md in the dtk repo`
+const flatName = (topic) => topic.replace(/^\//, "").replace(/\//g, "_")
+const stem = (path) => path.replace(/\.(db|mcap)$/, "")
+
+// The value after a flag, and the args without either.
+function takeFlag(args, ...names) {
+    const at = args.findIndex((each) => names.includes(each))
+    if (at === -1) {
+        return [null, args]
+    }
+    return [args[at + 1], [...args.slice(0, at), ...args.slice(at + 2)]]
+}
+
+// mcap_edit never asks before it writes, so a -y meant for the .db tools is dropped.
+const withoutYes = (args) => args.filter((each) => each !== "-y" && each !== "--yes")
+
+const ENCODE_HELP = "--encode TOPIC=keep|raw|jpeg[:Q] (repeatable), --image-encoding keep|raw|jpeg[:Q] for the rest, --jpeg-quality N"
 
 const topic = new Command()
     .name("topic")
@@ -66,12 +84,12 @@ const topic = new Command()
         perFormat({
             name: "topic rename",
             description: "Rename one topic, in place",
-            usage: "<recording> <old> <new>",
+            usage: "<recording> <old> <new> [-y]",
             byFormat: {
                 mcap: (recording, rest) =>
                     rest.length < 2
                         ? "dtk data topic rename: need <old> <new>"
-                        : { tool: "mcap_edit", args: [recording, "--rename", `${rest[0]}=${rest[1]}`, ...rest.slice(2)] },
+                        : { tool: "mcap_edit", args: [recording, "--rename", `${rest[0]}=${rest[1]}`, ...withoutYes(rest.slice(2))] },
                 db: (recording, rest) =>
                     rest.length < 2
                         ? "dtk data topic rename: need <old> <new>"
@@ -89,7 +107,7 @@ const topic = new Command()
                 mcap: (recording, rest) =>
                     rest.length < 1
                         ? "dtk data topic delete: need <topic>"
-                        : { tool: "mcap_edit", args: [recording, "--delete", rest[0], ...rest.slice(1)] },
+                        : { tool: "mcap_edit", args: [recording, "--delete", rest[0], ...withoutYes(rest.slice(1))] },
                 db: (recording, rest) =>
                     rest.length < 1
                         ? "dtk data topic delete: need <stream>"
@@ -110,11 +128,29 @@ const topic = new Command()
                 const from = requireFormat(options.from, ["db", "mcap"], "topic copy")
                 const to = requireFormat(options.to, ["db", "mcap"], "topic copy")
                 if (from !== to) {
-                    console.error(
-                        `dtk data topic copy: one is a .db and the other an .mcap. Convert one ` +
-                        `first with \`dtk data to_db\` or \`dtk data to_mcap\`.`,
-                    )
-                    Deno.exit(2)
+                    // Across formats the one topic is converted on its own into a
+                    // scratch recording of the destination's format, and copied from there.
+                    const folder = await Deno.makeTempDir({ prefix: "dtk_topic_copy_" })
+                    let code = 1
+                    try {
+                        let plan
+                        if (to === "db") {
+                            const stream = flatName(options.topic)
+                            await mcapToDb(options.from, `${folder}/one.db`, ["--map", `${options.topic}=${stream}`, "--image-encoding", "keep"])
+                            plan = { tool: "db_cp", args: ["--from", `${folder}/one.db`, "--to", options.to, "--stream", stream] }
+                        } else {
+                            const topic = options.topic.startsWith("/") ? options.topic : `/${options.topic}`
+                            await dbToMcap(options.from, `${folder}/one.mcap`, {
+                                encode: ["--image-encoding", "keep"],
+                                dbToMcapArgs: ["--streams", options.topic, "--topics", JSON.stringify({ [options.topic]: topic })],
+                            })
+                            plan = { tool: "mcap_edit", args: [options.to, "--copy-topic-from", `${folder}/one.mcap:${topic}`] }
+                        }
+                        code = await runTool(toolsByName[plan.tool], plan.args)
+                    } finally {
+                        await Deno.remove(folder, { recursive: true }).catch(() => {})
+                    }
+                    Deno.exit(code)
                 }
                 const plan = to === "db"
                     ? {
@@ -143,6 +179,11 @@ const tf = new Command()
             usage: "<recording> [--seconds N]",
             byFormat: {
                 db: (recording, rest) => ({ tool: "db_tree", args: [recording, ...rest] }),
+                // Only the tf channels are converted, so a big recording costs little.
+                mcap: async (recording, rest) => ({
+                    tool: "db_tree",
+                    args: [await asFormat(recording, "db", ["--only-schema", "tf2_msgs/msg/TFMessage"]), ...rest],
+                }),
             },
         }),
     )
@@ -172,7 +213,7 @@ const tf = new Command()
                         ? "dtk data tf rename: need <old> <new>"
                         : {
                             tool: "mcap_edit",
-                            args: [recording, "--rename-tf-frame", `${rest[0]}=${rest[1]}`, ...rest.slice(2)],
+                            args: [recording, "--rename-tf-frame", `${rest[0]}=${rest[1]}`, ...withoutYes(rest.slice(2))],
                         },
             },
         }),
@@ -193,7 +234,7 @@ const tf = new Command()
                         ? "dtk data tf add: need the json"
                         : {
                             tool: "mcap_edit",
-                            args: [recording, "--add-tf", rest[0], ...rest.slice(1)],
+                            args: [recording, "--add-tf", rest[0], ...withoutYes(rest.slice(1))],
                         },
             },
         }),
@@ -261,46 +302,107 @@ export default new Command()
         accepts: ["db", "mcap"],
         argumentsLine: "<recording> [output.png]",
     }))
-    .command("to_video", passthrough({
-        name: "to_video",
-        description: "Encode an image stream as an mp4",
-        tool: "to_video",
-        accepts: ["db"],
-        argumentsLine: "<recording> <stream> [output.mp4]",
-    }))
-    .command("to_mcap", passthrough({
-        name: "to_mcap",
-        description: "Convert a memory2 .db into a ROS 2 .mcap",
-        tool: "db_to_mcap",
-        accepts: ["db"],
-        argumentsLine: "<recording.db> [-o out.mcap]",
-    }))
-    .command("to_db", passthrough({
-        name: "to_db",
-        description: "Convert an .mcap into a memory2 .db",
-        tool: "mcap_to_db",
-        accepts: ["mcap"],
-        argumentsLine: "<recording.mcap> <out.db>",
-    }))
-    .command("lcm_to_cdr", passthrough({
-        name: "lcm_to_cdr",
-        description: "Re-encode the raw-LCM channels of an .mcap as CDR",
-        tool: "mcap_lcm_to_cdr",
-        accepts: ["mcap"],
-        argumentsLine: "<recording.mcap> [-o out.mcap]",
-    }))
-    .command("check", passthrough({
-        name: "check",
-        description: "Report whether Foxglove can actually draw an .mcap",
-        tool: "mcap_check",
-        accepts: ["mcap"],
-    }))
+    .command(
+        "to_video",
+        perFormat({
+            name: "to_video",
+            description: "Encode an image stream as an mp4",
+            usage: "<recording> <stream|topic> [output.mp4] [--fps N] [--crf N] [--scale PX] [--stride N] [--list]",
+            byFormat: {
+                db: (recording, rest) => ({ tool: "to_video", args: [recording, ...rest] }),
+                // Just that topic is converted to a .db, in the cache, and encoded from there.
+                mcap: async (recording, rest) => {
+                    if (rest.includes("--list")) {
+                        return { tool: "to_video", args: [await asFormat(recording, "db", ["--image-encoding", "keep"]), ...rest] }
+                    }
+                    const [topic, ...more] = rest
+                    if (!topic) {
+                        return "dtk data to_video: need the topic"
+                    }
+                    const stream = flatName(topic)
+                    const output = more[0] && !more[0].startsWith("-") ? [] : [`${stem(recording)}_${stream}.mp4`]
+                    const db = await asFormat(recording, "db", ["--map", `${topic}=${stream}`])
+                    return { tool: "to_video", args: [db, stream, ...output, ...more] }
+                },
+            },
+        }),
+    )
+    .command(
+        "to_mcap",
+        perFormat({
+            name: "to_mcap",
+            description: "Write a ROS 2 .mcap: from a .db, or a re-encoded copy of an .mcap",
+            usage: `<recording> [-o out.mcap] [${ENCODE_HELP}]`,
+            byFormat: {
+                db: async (recording, rest) => {
+                    const { encode, rest: others } = splitEncodeFlags(rest)
+                    const [out, dbToMcapArgs] = takeFlag(others, "-o", "--out")
+                    await dbToMcap(recording, out ?? `${stem(recording)}.mcap`, { encode, dbToMcapArgs })
+                    console.log(`wrote ${out ?? `${stem(recording)}.mcap`}`)
+                    return 0
+                },
+                mcap: (recording, rest) => {
+                    const [out, others] = takeFlag(rest, "-o", "--out")
+                    return { tool: "mcap_recode", args: [recording, out ?? `${stem(recording)}.recoded.mcap`, ...others] }
+                },
+            },
+        }),
+    )
+    .command(
+        "to_db",
+        perFormat({
+            name: "to_db",
+            description: "Write a memory2 .db: from an .mcap, or a re-encoded copy of a .db",
+            usage: `<recording> [out.db] [${ENCODE_HELP}]`,
+            byFormat: {
+                mcap: (recording, rest) => {
+                    const out = rest[0] && !rest[0].startsWith("-") ? [] : [`${stem(recording)}.db`]
+                    return { tool: "mcap_to_db", args: [recording, ...out, ...rest] }
+                },
+                db: (recording, rest) => {
+                    const out = rest[0] && !rest[0].startsWith("-") ? [] : [`${stem(recording)}.recoded.db`]
+                    return { tool: "db_recode", args: [recording, ...out, ...rest] }
+                },
+            },
+        }),
+    )
+    .command(
+        "lcm_to_cdr",
+        perFormat({
+            name: "lcm_to_cdr",
+            description: "Write an .mcap whose channels are all CDR (from an .mcap with raw-LCM channels, or from a .db)",
+            usage: "<recording> [-o out.mcap]",
+            byFormat: {
+                mcap: (recording, rest) => ({ tool: "mcap_lcm_to_cdr", args: [recording, ...rest] }),
+                // Everything in a .db is LCM, and to_mcap writes it all as CDR.
+                db: async (recording, rest) => {
+                    const [out, others] = takeFlag(rest, "-o", "--out")
+                    const target = out ?? `${stem(recording)}.mcap`
+                    await dbToMcap(recording, target, { encode: ["--image-encoding", "keep"], dbToMcapArgs: others })
+                    console.log(`wrote ${target}`)
+                    return 0
+                },
+            },
+        }),
+    )
+    .command(
+        "check",
+        perFormat({
+            name: "check",
+            description: "Report whether Foxglove can actually draw an .mcap (for a .db: the .mcap to_mcap would write)",
+            usage: "<recording>",
+            byFormat: {
+                mcap: (recording, rest) => ({ tool: "mcap_check", args: [recording, ...rest] }),
+                db: async (recording, rest) => ({ tool: "mcap_check", args: [await asFormat(recording, "mcap"), ...rest] }),
+            },
+        }),
+    )
     .command(
         "to_rrd",
         new Command()
             .name("to_rrd")
             .description("Convert to a rerun .rrd, keep it, and open it")
-            .usage("<recording.db> [options]")
+            .usage("<recording> [options]")
             .arguments("<recording:string>")
             .option("--no-open", "Just convert; do not launch rerun")
             .option("--force", "Convert again even if the cached .rrd is still good")
@@ -308,7 +410,10 @@ export default new Command()
             .option("--voxel <size:number>", "Point size hint")
             .option("--axis <meters:number>", "Axis-arrow length on every transform frame (0 = off)")
             .action(async (options, recording) => {
-                requireFormat(recording, ["db"], "to_rrd")
+                // An .mcap is converted to a .db (kept in the cache) and drawn from that.
+                if (requireFormat(recording, ["db", "mcap"], "to_rrd") === "mcap") {
+                    recording = await asFormat(recording, "db")
+                }
                 const conversion = []
                 if (options.cameraHz !== undefined) {
                     conversion.push("--camera-hz", String(options.cameraHz))

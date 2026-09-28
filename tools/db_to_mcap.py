@@ -4,6 +4,7 @@
 import argparse
 import heapq
 import json
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -230,6 +231,53 @@ CONVERTERS = {
 }
 
 
+# A stream dimos stores under the "jpeg" codec holds a jpeg in each row; reading it
+# through the store would decode every frame to pixels and write it out raw, many
+# times larger. So those rows are read straight from sqlite and the jpeg bytes are
+# written as a CompressedImage, untouched.
+class StoredJpeg:
+    def __init__(self, frame_id, data):
+        self.frame_id = frame_id
+        self.data = data
+
+
+def convert_stored_jpeg(message, seconds):
+    return CompressedImage(
+        header=header(seconds, message.frame_id),
+        format="jpeg",
+        data=np.frombuffer(message.data, dtype=np.uint8),
+    )
+
+
+def jpeg_streams(database_path):
+    connection = sqlite3.connect(str(database_path))
+    try:
+        rows = connection.execute("SELECT name, config FROM _streams").fetchall()
+    finally:
+        connection.close()
+    return {
+        name
+        for name, config in rows
+        if json.loads(config).get("codec_id") == "jpeg" and json.loads(config).get("payload_module", "").endswith(".Image")
+    }
+
+
+def stored_jpeg_events(database_path, stream_name, limit):
+    from dimos_lcm.sensor_msgs.Image import Image as LCMImage
+
+    connection = sqlite3.connect(str(database_path))
+    try:
+        query = (
+            f'SELECT s.ts, b.data FROM "{stream_name}" s JOIN "{stream_name}_blob" b ON b.id = s.id ORDER BY s.ts'
+            + (f" LIMIT {int(limit)}" if limit else "")
+        )
+        for seconds, blob in connection.execute(query):
+            message = LCMImage.lcm_decode(bytes(blob))
+            yield seconds, stream_name, type("Observation", (), {"data": StoredJpeg(message.header.frame_id, bytes(message.data))})
+    finally:
+        connection.close()
+
+
 def stream_events(store, stream_name, limit):
     for index, observation in enumerate(store.streams[stream_name]):
         if limit and index >= limit:
@@ -263,6 +311,7 @@ def main():
     store = SqliteStore(path=str(database_path), must_exist=True)
     topics = json.loads(arguments.topics) if arguments.topics else {}
     stream_names = arguments.streams.split(",") if arguments.streams else store.list_streams()
+    stored_jpeg = jpeg_streams(database_path)
 
     with open(output_path, "wb") as output_file:
         writer = Writer(output_file)
@@ -271,11 +320,14 @@ def main():
         channels = {}
         skipped = []
         for stream_name in stream_names:
-            payload_type = type(next(iter(store.streams[stream_name])).data).__name__
-            if payload_type not in CONVERTERS:
-                skipped.append(f"{stream_name} ({payload_type})")
-                continue
-            ros_type, converter = CONVERTERS[payload_type]
+            if stream_name in stored_jpeg:
+                ros_type, converter = "sensor_msgs/msg/CompressedImage", convert_stored_jpeg
+            else:
+                payload_type = type(next(iter(store.streams[stream_name])).data).__name__
+                if payload_type not in CONVERTERS:
+                    skipped.append(f"{stream_name} ({payload_type})")
+                    continue
+                ros_type, converter = CONVERTERS[payload_type]
             definition, _ = typestore.generate_msgdef(ros_type)
             schema_id = writer.register_schema(name=ros_type, encoding="ros2msg", data=definition.encode())
             topic = topics.get(stream_name, "/" + stream_name)
@@ -286,7 +338,15 @@ def main():
         for entry in skipped:
             print(f"  SKIPPED (no ROS mapping): {entry}", file=sys.stderr, flush=True)
 
-        merged = heapq.merge(*(stream_events(store, name, arguments.limit) for name in channels))
+        merged = heapq.merge(
+            *(
+                stored_jpeg_events(database_path, name, arguments.limit)
+                if name in stored_jpeg
+                else stream_events(store, name, arguments.limit)
+                for name in channels
+            ),
+            key=lambda event: event[0],
+        )
 
         written = 0
         failed = 0

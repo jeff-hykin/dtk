@@ -5,21 +5,7 @@ import { DtkError } from "./errors.js"
 import { cacheDir } from "./tool_store.js"
 import { toolsByName } from "./registry.js"
 import { runTool } from "./tool_store.js"
-
-// Path + mtime + size, so an edited recording converts again and an untouched one
-// never does. Reading the whole file to hash it would cost about what the
-// conversion costs, which would defeat the point.
-async function cacheKey(path, options) {
-    const info = Deno.statSync(path)
-    const identity = [
-        Deno.realPathSync(path),
-        info.mtime?.getTime() ?? 0,
-        info.size,
-        JSON.stringify(options),
-    ].join("\n")
-    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(identity))
-    return [...new Uint8Array(digest)].slice(0, 12).map((b) => b.toString(16).padStart(2, "0")).join("")
-}
+import { cacheKey } from "./conversions.js"
 
 function rerunOnPath() {
     try {

@@ -4,26 +4,28 @@
 // Store(db).stream(...)) can work on a lite_record recording.
 //
 //   mcap_to_db in.mcap out.db [--map /topic=stream ...] [--skip /topic ...]
-//              [--image-encoding jpeg|raw|keep] [--jpeg-quality N] [--stride N]
+//              [--encode TOPIC=keep|raw|jpeg[:Q] ...] [--image-encoding keep|raw|jpeg[:Q]]
+//              [--jpeg-quality N] [--stride N]
 //              [--tf-prefer-message-frame FRAME] [--trim-to-odom]
 //
 // --skip TOPIC: leave a topic out, for one whose stream is written by something
 //   else afterwards. --map already acts as a whitelist when given.
+// --only-schema NAME (repeatable): copy only channels of this schema, e.g.
+//   tf2_msgs/msg/TFMessage for just the tf tree.
 //
-// --image-encoding: what a CompressedImage topic becomes. dimos carries a frame in
-//   sensor_msgs.Image with the codec in `encoding`, not in a separate type, and
-//   codec_for() hands any Image payload a JpegCodec, so `jpeg` (the default) is what
-//   a recording made by dimos itself looks like: the stream becomes an Image under
-//   the "jpeg" codec and loses a trailing /compressed from its name. A frame already
-//   in jpeg is passed through rather than re-encoded, so no generation is lost.
-//   `raw` decodes instead, to rgb8 or mono8 under lz4+lcm. `keep` only rewraps what
-//   Image can already hold and leaves anything else a CompressedImage.
-//   Topics recorded as a raw sensor_msgs/Image are never touched by this: depth is
-//   16-bit and jpeg is not, so re-encoding one would destroy it. For the same reason a
-//   16-bit png (compressed depth) stays a png under jpeg and keep, and becomes mono16 under
-//   raw; a 16-bit jxl stays a jxl under all three. png, webp and 8-bit jxl are decoded.
-// --jpeg-quality N: quality for the above, 1-100. Default 50, which is what dimos's
-//   own JpegCodec uses.
+// --encode TOPIC=CHOICE (repeatable): what one image topic becomes, where CHOICE is
+//   keep, raw, or jpeg[:QUALITY] (see image_recode/recode.js). TOPIC is the mcap topic
+//   or the stream name it lands on. Topics not named follow --image-encoding (default
+//   jpeg), at --jpeg-quality when given.
+//   jpeg: the stream becomes a sensor_msgs.Image under the "jpeg" codec, which is what
+//   a recording made by dimos itself looks like (codec_for() hands any Image payload a
+//   JpegCodec), and a trailing /compressed leaves its name. A frame already in jpeg
+//   passes through untouched unless a quality was asked for.
+//   raw: decoded to rgb8 / mono8 / mono16 under lz4+lcm.
+//   keep: the bytes stay in their codec. A jpeg is still rewrapped as an Image, since
+//   that holds it byte for byte; anything else stays a CompressedImage.
+//   Depth is never put through jpeg: a 16-bit frame asked for jpeg is kept instead.
+//   png, jpeg, webp and 8-bit jxl can be decoded; 16-bit png decodes to mono16.
 //
 // --tf-prefer-message-frame FRAME: when a tf edge (parent, child) carries more than
 //   one value in the file (a recorder's original edge and a urdf's corrected one
@@ -48,39 +50,43 @@ import { PointCloud2, PointField, CompressedImage, Image, CameraInfo, Imu } from
 import { Odometry } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/nav_msgs"
 import { TFMessage } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/tf2_msgs"
 import { TransformStamped } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/geometry_msgs"
+import { EncodeChoices, RecodePool, codecOf, decide, frameSize, needsWorker } from "./image_recode/recode.js"
+import { compressFrame } from "./image_recode/lz4_frame.js"
 
 const positional = []
 const mapping = new Map()
 const skipped = new Set()
-let imageEncoding = "jpeg"
-let jpegQuality = 50
+const onlySchemas = new Set()
+let choices
+let argv
+try {
+    ;({ choices, rest: argv } = EncodeChoices.fromArgs(Deno.args, { kind: "jpeg" }))
+} catch (error) {
+    console.error(error.message)
+    Deno.exit(2)
+}
 let stride = 1
 let preferFrame = null
 let trimToOdom = false
-for (let i = 0; i < Deno.args.length; i++) {
-    const arg = Deno.args[i]
+for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
     if (arg === "--tf-prefer-message-frame") {
-        preferFrame = Deno.args[++i]
+        preferFrame = argv[++i]
     } else if (arg === "--trim-to-odom") {
         trimToOdom = true
     } else if (arg === "--map") {
-        const [topic, stream] = Deno.args[++i].split("=")
+        const [topic, stream] = argv[++i].split("=")
         mapping.set(topic, stream)
-    } else if (arg === "--image-encoding") {
-        imageEncoding = Deno.args[++i]
-        if (!["jpeg", "raw", "keep"].includes(imageEncoding)) {
-            console.error(`--image-encoding must be jpeg, raw or keep, not ${imageEncoding}`)
-            Deno.exit(2)
-        }
-    } else if (arg === "--jpeg-quality") {
-        jpegQuality = Math.min(100, Math.max(1, Number(Deno.args[++i])))
+    } else if (arg === "--only-schema") {
+        onlySchemas.add(argv[++i])
     } else if (arg === "--skip") {
-        skipped.add(Deno.args[++i])
+        skipped.add(argv[++i])
     } else if (arg === "--stride") {
-        stride = Math.max(1, Number(Deno.args[++i]))
+        stride = Math.max(1, Number(argv[++i]))
     } else if (arg === "-h" || arg === "--help") {
         console.log("usage: mcap_to_db in.mcap out.db [--map /topic=stream ...] [--skip /topic ...]\n" +
-            "                  [--image-encoding jpeg|raw|keep] [--jpeg-quality N] [--stride N]")
+            "                  [--encode TOPIC=keep|raw|jpeg[:Q] ...] [--image-encoding keep|raw|jpeg[:Q]]\n" +
+            "                  [--jpeg-quality N] [--stride N]")
         Deno.exit(0)
     } else {
         positional.push(arg)
@@ -170,140 +176,6 @@ const fillXyz = (target, source) => {
     }
 }
 
-// The compressed codecs dimos's sensor_msgs.Image understands in its `encoding`
-// field. Image.lcm_decode dispatches on that field and knows the raw layouts plus
-// "jpeg"; "png" raises there, so png bytes can only reach an Image by being
-// re-encoded (--image-encoding jpeg, the default) or decoded (raw). Under `keep`
-// a png channel stays a CompressedImage, which readers that decode one
-// (memory_world wraps such a stream in a cv2 decoder) handle.
-const CARRIED_BY_IMAGE = new Set(["jpeg"])
-
-// What this tool can decode on the way to another encoding.
-const DECODABLE = new Set(["png", "jpeg", "webp", "jxl"])
-
-// Bits per sample in a jxl frame, from its image metadata, or `null` when the header
-// holds something this does not walk (a preview or animation header) — a caller then
-// treats the frame as possibly deep. A bare codestream starts ff0a; the container
-// form carries it in a jxlc box, or split over jxlp boxes whose first holds the header.
-const jxlBitDepth = (data) => {
-    let stream = data
-    if (data[0] !== 0xff) {
-        const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-        stream = null
-        for (let at = 0; at + 8 <= data.length; ) {
-            let size = view.getUint32(at)
-            const type = String.fromCharCode(...data.subarray(at + 4, at + 8))
-            let header = 8
-            if (size === 1) {
-                size = Number(view.getBigUint64(at + 8))
-                header = 16
-            } else if (size === 0) {
-                size = data.length - at
-            }
-            if (type === "jxlc" || type === "jxlp") {
-                stream = data.subarray(at + header + (type === "jxlp" ? 4 : 0), at + size)
-                break
-            }
-            if (size < header) {
-                return null
-            }
-            at += size
-        }
-    }
-    if (!stream || stream[0] !== 0xff || stream[1] !== 0x0a) {
-        return null
-    }
-    let bit = 16
-    const u = (count) => {
-        let value = 0
-        for (let i = 0; i < count; i++, bit++) {
-            value |= ((stream[bit >> 3] >> (bit & 7)) & 1) << i
-        }
-        return value
-    }
-    const u32 = (...choices) => {
-        const [bits, offset] = choices[u(2)]
-        return u(bits) + offset
-    }
-    const sizeHeader = () => {
-        const small = u(1)
-        const dimension = () => (small ? u(5) : u32([9, 1], [13, 1], [18, 1], [30, 1]))
-        dimension()
-        if (u(3) === 0) {
-            dimension()
-        }
-    }
-    sizeHeader()
-    if (u(1)) {
-        return 8 // all_default metadata
-    }
-    if (u(1)) {
-        u(3) // orientation
-        if (u(1)) {
-            sizeHeader() // intrinsic size
-        }
-        if (u(1) || u(1)) {
-            return null // preview or animation header
-        }
-    }
-    return u(1) ? u32([0, 32], [0, 16], [0, 24], [6, 1]) : u32([0, 8], [0, 10], [0, 12], [6, 1])
-}
-
-// Whether a frame's bytes are the codec it claims, for codecs whose size the tool
-// never needs to read itself because a worker decodes them.
-const hasSignature = (codec, data) => {
-    if (codec === "webp") {
-        return data.length >= 12 && String.fromCharCode(...data.subarray(0, 4)) === "RIFF" &&
-            String.fromCharCode(...data.subarray(8, 12)) === "WEBP"
-    }
-    if (codec === "jxl") {
-        return (data[0] === 0xff && data[1] === 0x0a) ||
-            String.fromCharCode(...data.subarray(4, 8)) === "JXL "
-    }
-    return frameSize(codec, data) !== null
-}
-
-// A compressed frame's pixel size, read out of the frame itself. `null` when the
-// bytes are not the codec they claim to be, which sends the frame down the
-// CompressedImage path rather than writing an Image with a bogus width.
-const frameSize = (codec, data) => {
-    const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
-    if (codec === "png") {
-        // 8-byte signature, then an IHDR chunk whose width and height lead its body.
-        if (data.length < 24 || view.getUint32(0) !== 0x89504e47 || view.getUint32(12) !== 0x49484452) {
-            return null
-        }
-        return { width: view.getUint32(16), height: view.getUint32(20) }
-    }
-    if (codec === "jpeg") {
-        if (data.length < 4 || view.getUint16(0) !== 0xffd8) {
-            return null
-        }
-        // Walk the marker segments to the frame header; only SOFn carries the size,
-        // and SOF4/SOF8/SOF12 are not frame headers despite sitting in that range.
-        for (let at = 2; at + 4 <= data.length; ) {
-            if (view.getUint8(at) !== 0xff) {
-                return null
-            }
-            const marker = view.getUint8(at + 1)
-            if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
-                at += 2
-                continue
-            }
-            const length = view.getUint16(at + 2)
-            if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-                if (at + 9 > data.length) {
-                    return null
-                }
-                return { width: view.getUint16(at + 7), height: view.getUint16(at + 5) }
-            }
-            at += 2 + length
-        }
-        return null
-    }
-    return null
-}
-
 // Each converter returns { lcmBytes, stampSeconds, pose } from a CDR payload.
 const CONVERTERS = {
     "sensor_msgs/msg/PointCloud2": (bytes, seq) => {
@@ -350,66 +222,27 @@ const CONVERTERS = {
         const pose = [position.x, position.y, position.z, orientation.x, orientation.y, orientation.z, orientation.w]
         return { lcmBytes: message.encode(), stampSeconds: header.stamp.sec + header.stamp.nsec / 1e9, pose }
     },
-    // dimos carries a compressed frame in sensor_msgs.Image with the codec in
-    // `encoding` and the payload in `data`, rather than in a separate type, so a
-    // CompressedImage is written as an Image when its channel can reach one. A
-    // channel whose codec Image already holds passes its bytes through untouched;
-    // one that has to be re-encoded hands the frame back for a worker to do, since
-    // that is the only expensive step in a conversion. Width and height are not in
-    // the ROS message, so they are read out of the frame header.
-    "sensor_msgs/msg/CompressedImage": (bytes, seq, asImage = false, recode = null) => {
+    // Image topics hand back the frame itself; what it becomes is decided per stream
+    // (see the plan below), since a CompressedImage may be written as an Image.
+    "sensor_msgs/msg/CompressedImage": (bytes) => {
         const reader = new CdrReader(bytes)
         const header = reader.header()
         const format = reader.string()
-        const dataLength = reader.uint32()
-        const data = reader.bytes(dataLength)
-        const stampSeconds = header.stamp.sec + header.stamp.nsec / 1e9
-        const codec = format.toLowerCase().split(/[;, ]/)[0]
-        if (asImage && recode) {
-            return { recode: { codec, bytes: data }, header, seq, stampSeconds, pose: null }
-        }
-        if (asImage) {
-            const size = frameSize(codec, data)
-            // The stream is already registered as an Image, so a frame that cannot be
-            // sized has nowhere valid to go; writing a CompressedImage into it would
-            // leave rows the reader cannot decode.
-            if (!size) {
-                throw new Error(`frame ${seq} is ${format}, which does not parse as a frame this stream can hold`)
-            }
-            const message = new Image()
-            fillHeader(message.header, header, seq)
-            message.height = size.height
-            message.width = size.width
-            message.encoding = codec
-            message.is_bigendian = 0
-            message.step = 0 // no row stride in a compressed frame
-            message.data = data
-            message.data_length = dataLength
-            return { lcmBytes: message.encode(), stampSeconds, pose: null }
-        }
-        const message = new CompressedImage()
-        fillHeader(message.header, header, seq)
-        message.format = format
-        message.data = data
-        message.data_length = dataLength
-        return { lcmBytes: message.encode(), stampSeconds, pose: null }
+        const data = reader.bytes(reader.uint32())
+        const frame = { compressed: true, codec: codecOf(format), format, bytes: data }
+        return { frame, header, stampSeconds: header.stamp.sec + header.stamp.nsec / 1e9, pose: null }
     },
-    "sensor_msgs/msg/Image": (bytes, seq) => {
+    "sensor_msgs/msg/Image": (bytes) => {
         const reader = new CdrReader(bytes)
         const header = reader.header()
-        const message = new Image()
-        fillHeader(message.header, header, seq)
-        message.height = reader.uint32()
-        message.width = reader.uint32()
-        message.encoding = reader.string()
-        message.is_bigendian = reader.uint8()
-        message.step = reader.uint32()
-        const dataLength = reader.uint32()
-        message.data = reader.bytes(dataLength)
-        message.data_length = dataLength
-        // Raw frames are big and repetitive; memory2's lz4+lcm codec is an LZ4
-        // frame around the LCM bytes, which every reader here unwraps.
-        return { lcmBytes: new Uint8Array(lz4.compress(message.encode())), stampSeconds: header.stamp.sec + header.stamp.nsec / 1e9, pose: null, codec: "lz4+lcm" }
+        const height = reader.uint32()
+        const width = reader.uint32()
+        const encoding = reader.string()
+        const bigEndian = reader.uint8()
+        const step = reader.uint32()
+        const data = reader.bytes(reader.uint32())
+        const frame = { compressed: false, encoding, width, height, step, bigEndian, bytes: data }
+        return { frame, header, stampSeconds: header.stamp.sec + header.stamp.nsec / 1e9, pose: null }
     },
     // The three covariances are fixed float64[9], so they carry no length prefix.
     "sensor_msgs/msg/Imu": (bytes, seq) => {
@@ -539,68 +372,72 @@ const flatName = (topic) => topic.replace(/^\//, "").replace(/\//g, "_")
 const spacedName = (topic) => topic.replace(/^\//, "").replace(/\//g, "__")
 
 const eligible = []
+const IMAGE_SCHEMAS = new Set(["sensor_msgs/msg/CompressedImage", "sensor_msgs/msg/Image"])
 for (const channel of reader.channelsById.values()) {
-    const schema = reader.schemasById.get(channel.schemaId)
-    const convert = schema && CONVERTERS[schema.name]
-    if (!convert || channel.messageEncoding !== "cdr") {
-        continue
-    }
     if (mapping.size > 0 && !mapping.has(channel.topic)) {
         continue
     }
     if (skipped.has(channel.topic)) {
         continue
     }
-    eligible.push({ channel, schema, convert, name: mapping.get(channel.topic) })
+    const schema = reader.schemasById.get(channel.schemaId)
+    if (onlySchemas.size > 0 && !onlySchemas.has(schema?.name)) {
+        continue
+    }
+    const convert = schema && CONVERTERS[schema.name]
+    if (convert && channel.messageEncoding === "cdr") {
+        eligible.push({ channel, schema, convert, name: mapping.get(channel.topic) })
+        continue
+    }
+    // A raw-LCM channel (web_ctrl writes these, with the type in its metadata) is
+    // already what a memory2 blob holds, so its bytes go straight in.
+    const lcmType = channel.metadata?.get?.("lcm_type")
+    if (channel.messageEncoding === "lcm" && /^\w+\.\w+$/.test(lcmType ?? "")) {
+        const [pkg, type] = lcmType.split(".")
+        const payloadModule = `dimos.msgs.${pkg}.${type}.${type}`
+        eligible.push({ channel, schema: { name: lcmType }, payloadModule, name: mapping.get(channel.topic), lcm: true })
+    }
 }
 
-// Which payload a CompressedImage channel writes is a property of the channel, not
-// of one message, because the stream's registry row is fixed before any row is
-// written. So each one is decided here from its first frame and every later frame
-// follows that, rather than a stray frame in another codec flipping the type
-// halfway through the stream.
+// What an image channel becomes is a property of the channel, not of one message,
+// because the stream's registry row is fixed before any row is written. So each is
+// decided here from its first frame and later frames follow it, rather than a stray
+// frame in another codec flipping the type halfway through the stream.
 const COMPRESSED_SUFFIX = "/compressed"
-for (const item of eligible.filter((item) => item.schema.name === "sensor_msgs/msg/CompressedImage")) {
-    item.asImage = false
+for (const item of eligible.filter((item) => IMAGE_SCHEMAS.has(item.schema.name))) {
+    let first = null
     for await (const message of reader.readMessages({ topics: [item.channel.topic] })) {
-        const peek = new CdrReader(message.data)
-        peek.header()
-        const codec = peek.string().toLowerCase().split(/[;, ]/)[0]
-        const bytes = peek.bytes(peek.uint32())
-        if (!hasSignature(codec, bytes)) {
-            break // not the codec it claims; leave the channel alone
-        }
-        item.codec = codec
-        // A deep frame is depth: jpeg holds 8 bits, so it is only ever decoded to mono16
-        // (raw, png only — the jxl decoder hands back 8 bits) or left as it came,
-        // never squeezed through jpeg. A jxl header this cannot read counts as deep.
-        const deep = (codec === "png" && bytes[24] === 16) || (codec === "jxl" && jxlBitDepth(bytes) !== 8)
-        if (deep) {
-            if (imageEncoding === "raw" && codec === "png" && bytes[25] === 0) {
-                item.asImage = true
-                item.recode = "raw"
-            }
-            break
-        }
-        if (imageEncoding === "jpeg" && DECODABLE.has(codec)) {
-            // Already jpeg means the bytes go straight through: re-encoding a jpeg
-            // only loses a generation for nothing.
-            item.asImage = true
-            item.recode = codec === "jpeg" ? null : "jpeg"
-        } else if (imageEncoding === "raw" && DECODABLE.has(codec)) {
-            item.asImage = true
-            item.recode = "raw"
-        } else if (CARRIED_BY_IMAGE.has(codec)) {
-            item.asImage = true
-            item.recode = null
-        }
+        first = item.convert(message.data).frame
         break
+    }
+    // The stream name can drop /compressed (below), so that spelling matches too.
+    const choice = choices.choiceFor(item.channel.topic, item.name, item.channel.topic.replace(/\/compressed$/, ""))
+    item.action = first ? decide(first, choice) : { kind: "keep" }
+    if (item.action.reason && choice.explicit) {
+        console.warn(`warning: ${item.channel.topic}: keeping it as it is (${item.action.reason})`)
+    }
+    // keep leaves a jpeg's bytes alone, and an Image holds those byte for byte.
+    const compressedJpeg = first?.compressed && first.codec === "jpeg" && frameSize("jpeg", first.bytes)
+    if (item.action.kind === "keep") {
+        item.output = !first?.compressed ? "raw" : compressedJpeg ? "jpeg" : "compressed"
+        if (item.output === "jpeg") {
+            item.action = { kind: "jpeg", passJpeg: true, quality: 50 }
+        }
+    } else {
+        item.output = item.action.kind // "jpeg" or "raw"
     }
     // The recorder marks a compressed topic with this suffix so it can sit beside the
     // decoded one; carrying it into a stream that is now an Image would misname it.
-    if (item.asImage && item.name === undefined && item.channel.topic.endsWith(COMPRESSED_SUFFIX)) {
+    if (item.output !== "compressed" && item.name === undefined && item.channel.topic.endsWith(COMPRESSED_SUFFIX)) {
         item.renamed = item.channel.topic.slice(0, -COMPRESSED_SUFFIX.length)
     }
+}
+const unmatched = choices.unmatched(
+    eligible.flatMap((item) => [item.channel.topic, item.name, item.channel.topic.replace(/\/compressed$/, "")]).filter(Boolean),
+)
+if (unmatched.length > 0) {
+    console.error(`--encode names no image topic in this recording: ${unmatched.join(", ")}`)
+    Deno.exit(2)
 }
 
 // Joining a topic's segments with _ can land two different topics on one name
@@ -641,84 +478,81 @@ for (const item of auto) {
 
 const plan = new Map() // channel id -> { name, convert, statements, seq }
 for (const item of eligible) {
-    const schemaName = item.asImage ? "sensor_msgs/msg/Image" : item.schema.name
-    // dimos stores a jpeg Image under the "jpeg" codec, not "lcm": codec_for() hands
-    // any Image payload a JpegCodec by default, and that is what a recording made by
-    // dimos itself carries (see rtab/alfred2.db). The blob either codec reads is the
-    // same LCM Image envelope, but the registry row should say what wrote it.
-    // A raw frame gets the lz4 wrapper a recorded one has; a compressed frame is
-    // already small and is stored under the codec that wrote it.
-    const codec = item.asImage ? (item.recode === "raw" ? "lz4+lcm" : "jpeg") : CODECS[item.schema.name] ?? "lcm"
-    const convert = item.asImage ? (bytes, seq) => item.convert(bytes, seq, true, item.recode) : item.convert
-    plan.set(item.channel.id, { name: item.name, topic: item.channel.topic, convert, recode: item.recode, statements: createStream(item.name, PAYLOAD_MODULES[schemaName], codec), seq: 0, written: 0 })
+    let payloadModule = item.payloadModule ?? PAYLOAD_MODULES[item.schema.name]
+    let codec = item.lcm ? "lcm" : CODECS[item.schema.name] ?? "lcm"
+    if (item.output) {
+        // dimos stores a jpeg Image under the "jpeg" codec, not "lcm": codec_for() hands
+        // any Image payload a JpegCodec by default, and that is what a recording made
+        // by dimos itself carries (see rtab/alfred2.db). A raw frame gets the lz4
+        // wrapper a recorded one has.
+        payloadModule = PAYLOAD_MODULES[item.output === "compressed" ? "sensor_msgs/msg/CompressedImage" : "sensor_msgs/msg/Image"]
+        codec = { compressed: "lcm", jpeg: "jpeg", raw: "lz4+lcm" }[item.output]
+    }
+    plan.set(item.channel.id, { name: item.name, topic: item.channel.topic, convert: item.convert, lcm: item.lcm, action: item.action, output: item.output, statements: createStream(item.name, payloadModule, codec), seq: 0, written: 0 })
 }
 if (plan.size === 0) {
-    console.error(`no cdr channels matched; convertible schemas are ${Object.keys(CONVERTERS).join(", ")}`)
+    console.error(`no channels matched; convertible cdr schemas are ${Object.keys(CONVERTERS).join(", ")}, plus raw-LCM channels`)
     Deno.exit(1)
 }
 for (const entry of plan.values()) {
-    console.log(`${entry.topic} -> ${entry.name}`)
+    console.log(`${entry.topic} -> ${entry.name}${entry.output ? ` (${entry.output === "jpeg" ? `jpeg${entry.action.passJpeg ? "" : ` q${entry.action.quality}`}` : entry.output})` : ""}`)
 }
 
-// Re-encoding runs on every core but two, in batches, because decoding a png and
-// encoding a jpeg together cost far more than the rest of a conversion put
-// together and would otherwise idle the machine one frame at a time. Frames are
-// held in arrival order and written in that order, so a stream's rows still climb
-// in time even though the work finishes out of order.
-const recodeWanted = [...plan.values()].some((entry) => entry.recode)
-const workerCount = recodeWanted ? Math.max(1, (navigator.hardwareConcurrency || 4) - 2) : 0
-const workers = []
-for (let i = 0; i < workerCount; i++) {
-    workers.push(new Worker(import.meta.resolve("./mcap_to_db_files/image_worker.js"), { type: "module" }))
+// An Image message around a frame the stream can hold as it is, or one a worker made.
+const imageMessage = (header, seq, { encoding, width, height, step, bigEndian, bytes }) => {
+    const message = new Image()
+    fillHeader(message.header, header, seq)
+    message.height = height
+    message.width = width
+    message.encoding = encoding
+    message.is_bigendian = bigEndian ?? 0
+    message.step = step ?? 0 // no row stride in a compressed frame
+    message.data = bytes
+    message.data_length = bytes.length
+    return message.encode()
 }
-const runBatch = (worker, frames, target) =>
-    new Promise((resolve, reject) => {
-        worker.onmessage = (event) => resolve(event.data)
-        worker.onerror = (event) => reject(new Error(event.message))
-        worker.postMessage(
-            { frames: frames.map((f) => ({ codec: f.recode.codec, bytes: f.recode.bytes })), target, quality: jpegQuality },
-            frames.map((f) => f.recode.bytes.buffer),
-        )
-    })
+// The blob one image row stores, given its stream's output.
+const imageBlob = (entry, header, seq, frame) => {
+    if (entry.output === "compressed") {
+        const message = new CompressedImage()
+        fillHeader(message.header, header, seq)
+        message.format = frame.format
+        message.data = frame.bytes
+        message.data_length = frame.bytes.length
+        return message.encode()
+    }
+    if (entry.output === "raw") {
+        // Raw frames are big and repetitive; memory2's lz4+lcm codec is an LZ4 frame
+        // around the LCM bytes, which every reader here unwraps.
+        return compressFrame(imageMessage(header, seq, frame))
+    }
+    const size = frameSize("jpeg", frame.bytes)
+    if (!size) {
+        throw new Error(`${entry.topic}: frame ${seq} is not a jpeg this stream can hold`)
+    }
+    return imageMessage(header, seq, { ...size, encoding: "jpeg", bytes: frame.bytes })
+}
 
-const BATCH = 24 // frames per worker per round
-let pending = [] // { entry, ts, recode, header, seq }
+const pool = new RecodePool()
+let pending = [] // { entry, ts, header, seq, frame, job } in arrival order
+let pendingJobs = 0
 const flushPending = async () => {
-    if (pending.length === 0) {
-        return
-    }
-    // Sliced per target, since one recording can want jpeg for colour and raw for
-    // something else, and a batch carries one target for all its frames.
-    const slices = []
-    for (const target of new Set(pending.map((frame) => frame.entry.recode))) {
-        const group = pending.filter((frame) => frame.entry.recode === target)
-        for (let at = 0; at < group.length; at += BATCH) {
-            slices.push(group.slice(at, at + BATCH))
-        }
-    }
-    const results = await Promise.all(
-        slices.map((slice, index) => runBatch(workers[index % workers.length], slice, slice[0].entry.recode)),
-    )
-    for (const [index, slice] of slices.entries()) {
-        for (const [at, frame] of slice.entries()) {
-            const out = results[index][at]
+    const jobs = pending.filter((row) => row.job).map((row) => row.job)
+    const results = await pool.run(jobs)
+    let at = 0
+    for (const row of pending) {
+        let frame = row.frame
+        if (row.job) {
+            const out = results[at++]
             if (out.error) {
-                throw new Error(`${frame.entry.topic}: ${out.error}`)
+                throw new Error(`${row.entry.topic}: ${out.error}`)
             }
-            const message = new Image()
-            fillHeader(message.header, frame.header, frame.seq)
-            message.height = out.height
-            message.width = out.width
-            message.encoding = out.encoding
-            message.is_bigendian = 0
-            message.step = out.step ?? 0
-            message.data = out.bytes
-            message.data_length = out.bytes.length
-            const encoded = message.encode()
-            insert(frame.entry, frame.ts, null, out.step ? new Uint8Array(lz4.compress(encoded)) : encoded)
+            frame = out.encoding === "jpeg" ? { compressed: true, codec: "jpeg", bytes: out.bytes } : out
         }
+        insert(row.entry, row.ts, null, imageBlob(row.entry, row.header, row.seq, frame))
     }
     pending = []
+    pendingJobs = 0
 }
 
 const started = performance.now()
@@ -743,11 +577,21 @@ for await (const message of reader.readMessages({ topics: [...plan.values()].map
     if (!entry || entry.seq++ % stride !== 0) {
         continue
     }
+    if (entry.lcm) {
+        insert(entry, Number(message.logTime) / 1e9, null, message.data)
+        if (++seen % 2000 === 0) {
+            db.exec("COMMIT; BEGIN")
+        }
+        continue
+    }
     const converted = entry.convert(message.data, entry.seq)
     const ts = converted.stampSeconds > 0 ? converted.stampSeconds : Number(message.logTime) / 1e9
-    if (converted.recode) {
-        pending.push({ entry, ts, recode: converted.recode, header: converted.header, seq: converted.seq })
-        if (pending.length >= BATCH * workers.length) {
+    if (converted.frame) {
+        const { frame } = converted
+        const job = needsWorker(frame, entry.action) ? { frame, target: entry.action.kind, quality: entry.action.quality } : null
+        pending.push({ entry, ts, header: converted.header, seq: entry.seq, frame, job })
+        pendingJobs += job ? 1 : 0
+        if (pendingJobs >= pool.capacity || pending.length >= 4 * pool.capacity) {
             await flushPending()
         }
     } else if (converted.tf) {
@@ -777,9 +621,7 @@ for await (const message of reader.readMessages({ topics: [...plan.values()].map
     }
 }
 await flushPending()
-for (const worker of workers) {
-    worker.terminate()
-}
+pool.close()
 for (const scan of earlyScans) {
     insert(scan.entry, scan.ts, null, scan.lcmBytes)
 }

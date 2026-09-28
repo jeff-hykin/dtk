@@ -2,6 +2,7 @@
 
 import * as Arrow from "https://esm.sh/apache-arrow@18.1.0"
 import lz4 from "https://esm.sh/lz4js@0.2.0"
+import { compressRawBlock } from "./image_recode/lz4_frame.js"
 import { sensor_msgs, nav_msgs, geometry_msgs } from "jsr:@dimos/msgs"
 
 import { Database } from "jsr:@db/sqlite@0.12"
@@ -124,11 +125,9 @@ function makeSetStoreInfoMsg() {
 }
 
 function makeArrowMsg(arrowIpc) {
-    const maxOut = lz4.compressBound(arrowIpc.length)
-    const compressed = new Uint8Array(maxOut)
-    const hashTable = new Int32Array(65536)
-    const compLen = lz4.compressBlock(arrowIpc, compressed, 0, arrowIpc.length, hashTable)
-    const compData = compressed.slice(0, compLen)
+    // lz4js's own compressBlock breaks the end-of-block rule (see lz4_frame.js), and
+    // returns nothing at all for data it cannot shrink.
+    const compData = compressRawBlock(arrowIpc)
 
     const pb = concat([
         storeIdBytes,  // field 1: store_id (StoreId message)

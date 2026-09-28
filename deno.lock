@@ -17,7 +17,8 @@
     "jsr:@std/path@0.217": "0.217.0",
     "jsr:@std/path@1": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
-    "jsr:@std/text@~1.0.7": "1.0.18"
+    "jsr:@std/text@~1.0.7": "1.0.18",
+    "npm:@types/node@*": "24.2.0"
   },
   "jsr": {
     "@cliffy/command@1.0.0-rc.7": {
@@ -97,6 +98,17 @@
     },
     "@std/text@1.0.18": {
       "integrity": "d199e516f80599813c64fd4aee5b8f26f6f7d1e1434c88fd153aeea6fea6a9b9"
+    }
+  },
+  "npm": {
+    "@types/node@24.2.0": {
+      "integrity": "sha512-3xyG3pMCq3oYCNg7/ZP+E1ooTaGB4cG8JWRsqqOYQdbWNY4zbaV0Ennrd7stjiJEFZCaybcIgpTjJWHRfBSIDw==",
+      "dependencies": [
+        "undici-types"
+      ]
+    },
+    "undici-types@7.10.0": {
+      "integrity": "sha512-t5Fy/nfn+14LuOc2KNYg75vZqClpAiqscVvMygNnlsHBFpSXdJaYtXMcdNLpl/Qvc3P2cB3s6lOV51nqsFq4ag=="
     }
   },
   "redirects": {

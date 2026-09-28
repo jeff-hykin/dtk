@@ -45,8 +45,14 @@ Add to this freely. Checked = done and verified.
 ## `dtk data <verb>` — one namespace for recordings
 
 Every verb takes a recording and works out for itself whether it is a memory2 `.db` or an
-`.mcap` (sqlite header vs `MCAP0` magic, not the extension). Where a verb only makes sense for
-one of the two, it says so and stops rather than half-working.
+`.mcap` (sqlite header vs `MCAP0` magic, not the extension). Every verb works on both: where
+the tool underneath reads only one format, the recording is converted first (kept in
+`~/.cache/dtk/converted`, keyed on path + mtime + size) — to_video, to_rrd and tf tree on an
+.mcap; check on a .db. `topic copy` works across formats by converting the one topic.
+
+- [x] image encodings per stream on every conversion path (mcap->db, db->db, db->mcap,
+      mcap->mcap): `--encode TOPIC=keep|raw|jpeg[:Q]`, shared code in `tools/image_recode/`.
+      png, jpeg, webp and 8-bit jxl decode; 16-bit depth is never put through jpeg
 
 - [x] `dtk data <verb>` command group, with format sniffing and a shared "wrong format" warning
 - [x] `dtk data summary <db|mcap>` — wire up `db_summary` (already handles both)
