@@ -25,8 +25,8 @@ from dimos.msgs.sensor_msgs.Imu import Imu
 from dimos.msgs.sensor_msgs.PointCloud2 import PointCloud2
 
 # db_to_mcap already holds the dimos -> ROS2 message converters; reuse rather than re-derive.
-_path = Path.home() / "Commands" / "db_to_mcap"
-# db_to_mcap has no .py suffix, so the loader has to be named explicitly.
+# It sits beside this file, both in the repo and in dtk's tool cache.
+_path = Path(__file__).with_name("db_to_mcap.py")
 _spec = importlib.util.spec_from_loader("db_to_mcap", SourceFileLoader("db_to_mcap", str(_path)))
 db_to_mcap = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(db_to_mcap)
