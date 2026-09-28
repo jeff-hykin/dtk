@@ -141,6 +141,7 @@ export const tools = [
         kind: "deno",
         description: "Copy ROS 2 topics out of an .mcap into a memory2 .db, re-encoded as LCM",
         entry: "tools/mcap_to_db.js",
+        extraFiles: ["tools/mcap_to_db_files/image_worker.js"],
         formats: ["mcap"],
         permissions: denoRecordingPermissions,
     },
