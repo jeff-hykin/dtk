@@ -330,8 +330,8 @@ export default new Command()
         name: "add",
         description: "Replay the recording through dimos modules and write their outputs back in",
         tool: "data_add",
-        accepts: ["db"],
-        argumentsLine: "<recording.db> '<json>' [options]",
+        accepts: ["db", "mcap"],
+        argumentsLine: "<recording.db|.mcap> '<json>' [options]",
     }))
     .command("topic", topic)
     .command("tf", tf)

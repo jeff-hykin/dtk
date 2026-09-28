@@ -15,6 +15,10 @@ appended to the same recording.
         }
     ]'
 
+On an .mcap the module has to be a StreamModule, and it runs offline through its
+pipeline instead of being replayed -- see data_add_mcap.py for that path and its two
+extra spec fields, "config" and "frame".
+
 `inputs` maps the module's stream name to the recording's stream name; `outputs` the
 other way round. `overwrite` is what makes a re-run safe: a stream that is about to be
 replaced is first renamed out of the way to `_delete_me_<name>`, the replay is pointed at
@@ -58,6 +62,8 @@ def read_specs(text: str) -> list[dict]:
             "inputs": dict(each.get("inputs") or {}),
             "outputs": dict(each.get("outputs") or {}),
             "tf_remappings": dict(each.get("tf_remappings") or {}),
+            "config": dict(each.get("config") or {}),
+            "frame": each.get("frame"),
             "overwrite": each.get("overwrite") is True,
         })
     return specs
@@ -187,10 +193,15 @@ def main() -> None:
     if not arguments.recording.is_file():
         sys.exit(f"no such recording: {arguments.recording}")
     with open(arguments.recording, "rb") as handle:
-        if handle.read(16) != b"SQLite format 3\0":
-            sys.exit(f"{arguments.recording} is not a memory2 .db; convert it with `dtk data to_db`")
-
+        magic = handle.read(16)
     specs = read_specs(arguments.spec)
+    if magic.startswith(b"\x89MCAP0\r\n"):
+        import data_add_mcap
+
+        data_add_mcap.run(arguments, specs)
+        return
+    if magic != b"SQLite format 3\0":
+        sys.exit(f"{arguments.recording} is neither a memory .db nor an .mcap")
     prefix = arguments.namespace or ""
     present = set(existing_streams(arguments.recording))
 
@@ -256,7 +267,10 @@ def main() -> None:
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
     from dimos.core.global_config import global_config
     from dimos.core.transport import LCMTransport
-    from dimos.memory2.store.sqlite import SqliteStore
+    try:
+        from dimos.memory.store.sqlite import SqliteStore
+    except ImportError:  # checkouts from before memory2 was renamed to memory
+        from dimos.memory2.store.sqlite import SqliteStore
 
     with sqlite3.connect(arguments.recording) as connection:
         for name, moved in to_rename.items():
