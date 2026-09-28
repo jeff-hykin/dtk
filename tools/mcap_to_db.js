@@ -20,7 +20,8 @@
 //   Image can already hold and leaves anything else a CompressedImage.
 //   Topics recorded as a raw sensor_msgs/Image are never touched by this: depth is
 //   16-bit and jpeg is not, so re-encoding one would destroy it. For the same reason a
-//   16-bit png (compressed depth) stays a png under jpeg and keep, and becomes mono16 under raw.
+//   16-bit png (compressed depth) stays a png under jpeg and keep, and becomes mono16 under
+//   raw; a 16-bit jxl stays a jxl under all three. png, webp and 8-bit jxl are decoded.
 // --jpeg-quality N: quality for the above, 1-100. Default 50, which is what dimos's
 //   own JpegCodec uses.
 //
@@ -178,7 +179,89 @@ const fillXyz = (target, source) => {
 const CARRIED_BY_IMAGE = new Set(["jpeg"])
 
 // What this tool can decode on the way to another encoding.
-const DECODABLE = new Set(["png", "jpeg"])
+const DECODABLE = new Set(["png", "jpeg", "webp", "jxl"])
+
+// Bits per sample in a jxl frame, from its image metadata, or `null` when the header
+// holds something this does not walk (a preview or animation header) — a caller then
+// treats the frame as possibly deep. A bare codestream starts ff0a; the container
+// form carries it in a jxlc box, or split over jxlp boxes whose first holds the header.
+const jxlBitDepth = (data) => {
+    let stream = data
+    if (data[0] !== 0xff) {
+        const view = new DataView(data.buffer, data.byteOffset, data.byteLength)
+        stream = null
+        for (let at = 0; at + 8 <= data.length; ) {
+            let size = view.getUint32(at)
+            const type = String.fromCharCode(...data.subarray(at + 4, at + 8))
+            let header = 8
+            if (size === 1) {
+                size = Number(view.getBigUint64(at + 8))
+                header = 16
+            } else if (size === 0) {
+                size = data.length - at
+            }
+            if (type === "jxlc" || type === "jxlp") {
+                stream = data.subarray(at + header + (type === "jxlp" ? 4 : 0), at + size)
+                break
+            }
+            if (size < header) {
+                return null
+            }
+            at += size
+        }
+    }
+    if (!stream || stream[0] !== 0xff || stream[1] !== 0x0a) {
+        return null
+    }
+    let bit = 16
+    const u = (count) => {
+        let value = 0
+        for (let i = 0; i < count; i++, bit++) {
+            value |= ((stream[bit >> 3] >> (bit & 7)) & 1) << i
+        }
+        return value
+    }
+    const u32 = (...choices) => {
+        const [bits, offset] = choices[u(2)]
+        return u(bits) + offset
+    }
+    const sizeHeader = () => {
+        const small = u(1)
+        const dimension = () => (small ? u(5) : u32([9, 1], [13, 1], [18, 1], [30, 1]))
+        dimension()
+        if (u(3) === 0) {
+            dimension()
+        }
+    }
+    sizeHeader()
+    if (u(1)) {
+        return 8 // all_default metadata
+    }
+    if (u(1)) {
+        u(3) // orientation
+        if (u(1)) {
+            sizeHeader() // intrinsic size
+        }
+        if (u(1) || u(1)) {
+            return null // preview or animation header
+        }
+    }
+    return u(1) ? u32([0, 32], [0, 16], [0, 24], [6, 1]) : u32([0, 8], [0, 10], [0, 12], [6, 1])
+}
+
+// Whether a frame's bytes are the codec it claims, for codecs whose size the tool
+// never needs to read itself because a worker decodes them.
+const hasSignature = (codec, data) => {
+    if (codec === "webp") {
+        return data.length >= 12 && String.fromCharCode(...data.subarray(0, 4)) === "RIFF" &&
+            String.fromCharCode(...data.subarray(8, 12)) === "WEBP"
+    }
+    if (codec === "jxl") {
+        return (data[0] === 0xff && data[1] === 0x0a) ||
+            String.fromCharCode(...data.subarray(4, 8)) === "JXL "
+    }
+    return frameSize(codec, data) !== null
+}
 
 // A compressed frame's pixel size, read out of the frame itself. `null` when the
 // bytes are not the codec they claim to be, which sends the frame down the
@@ -484,15 +567,16 @@ for (const item of eligible.filter((item) => item.schema.name === "sensor_msgs/m
         peek.header()
         const codec = peek.string().toLowerCase().split(/[;, ]/)[0]
         const bytes = peek.bytes(peek.uint32())
-        if (frameSize(codec, bytes) === null) {
+        if (!hasSignature(codec, bytes)) {
             break // not the codec it claims; leave the channel alone
         }
         item.codec = codec
-        // A 16-bit png is a depth frame: jpeg holds 8 bits, so it is only ever decoded
-        // to mono16 (raw) or left a png, never squeezed through jpeg.
-        const sixteenBit = codec === "png" && bytes[24] === 16
-        if (sixteenBit) {
-            if (imageEncoding === "raw" && bytes[25] === 0) {
+        // A deep frame is depth: jpeg holds 8 bits, so it is only ever decoded to mono16
+        // (raw, png only — the jxl decoder hands back 8 bits) or left as it came,
+        // never squeezed through jpeg. A jxl header this cannot read counts as deep.
+        const deep = (codec === "png" && bytes[24] === 16) || (codec === "jxl" && jxlBitDepth(bytes) !== 8)
+        if (deep) {
+            if (imageEncoding === "raw" && codec === "png" && bytes[25] === 0) {
                 item.asImage = true
                 item.recode = "raw"
             }

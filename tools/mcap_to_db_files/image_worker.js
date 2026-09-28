@@ -11,12 +11,14 @@
 
 import jpeg from "https://esm.sh/jpeg-js@0.4.4"
 import UPNG from "https://esm.sh/upng-js@2.1.0"
+import decodeWebp from "https://esm.sh/@jsquash/webp@1.5.0/decode.js"
+import decodeJxl from "https://esm.sh/@jsquash/jxl@1.3.0/decode.js"
 
 // { width, height, channels, pixels } from a compressed frame, where pixels is
 // RGBA for anything colour and one byte per pixel for greyscale. upng reports
 // the source's colour type, which is what says whether a frame was greyscale
 // before it was widened.
-const decode = (codec, bytes) => {
+const decode = async (codec, bytes) => {
     if (codec === "png") {
         const image = UPNG.decode(bytes)
         if (image.depth === 16 && image.ctype === 0) {
@@ -36,6 +38,12 @@ const decode = (codec, bytes) => {
         const image = jpeg.decode(bytes, { useTArray: true })
         return { width: image.width, height: image.height, grey: false, depth: 8, rgba: image.data }
     }
+    if (codec === "webp" || codec === "jxl") {
+        // Both hand back RGBA at 8 bits; a deep jxl never gets here.
+        const own = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+        const image = codec === "webp" ? await decodeWebp(own) : await decodeJxl(own)
+        return { width: image.width, height: image.height, grey: false, depth: 8, rgba: new Uint8Array(image.data.buffer) }
+    }
     throw new Error(`cannot decode ${codec}`)
 }
 
@@ -48,13 +56,13 @@ const greyFrom = (rgba, width, height) => {
     return out
 }
 
-self.onmessage = (event) => {
+self.onmessage = async (event) => {
     const { frames, target, quality } = event.data
     const results = []
     const transfer = []
     for (const frame of frames) {
         try {
-            const image = decode(frame.codec, frame.bytes)
+            const image = await decode(frame.codec, frame.bytes)
             if (image.depth === 16) {
                 if (target === "jpeg") {
                     throw new Error("a 16-bit frame cannot become a jpeg without losing its depth")
