@@ -133,7 +133,7 @@ export const tools = [
         description: "Convert a memory2 .db recording into a ROS 2 .mcap (needs a dimos checkout and uv)",
         entry: "tools/db_to_mcap.py",
         formats: ["db"],
-        needsDimosModule: "dimos/memory2/store/sqlite.py",
+        needsDimosModule: ["dimos/memory/store/sqlite.py", "dimos/memory2/store/sqlite.py"],
         withPackages: ["mcap", "rosbags"],
     },
     {
@@ -183,8 +183,8 @@ export const tools = [
         kind: "python",
         description: "Replay a recording through dimos modules and write their outputs back into it",
         entry: "tools/data_add.py",
-        formats: ["db"],
-        needsDimosModule: "dimos/memory2/store/sqlite.py",
+        formats: ["db", "mcap"],
+        needsDimosModule: ["dimos/memory/store/sqlite.py", "dimos/memory2/store/sqlite.py"],
     },
     {
         name: "run_supervisor",

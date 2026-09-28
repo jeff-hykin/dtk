@@ -47,6 +47,20 @@ export function findProjectFrom(startPath) {
 // The clones sit on different branches and not all of them have the module a
 // given tool imports, so the probe is for the module rather than for a folder
 // called dimos.
+// `moduleRelativePath` can be a list: any one of them present is enough (dimos renamed
+// memory2 to memory, and a tool that imports either should run on both kinds of clone).
+function hasAnyOf(root, moduleRelativePath) {
+    for (const each of [moduleRelativePath].flat()) {
+        try {
+            Deno.statSync(`${root}/${each}`)
+            return true
+        } catch (error) {
+            continue
+        }
+    }
+    return false
+}
+
 export function findDimosRepo(moduleRelativePath) {
     const home = Deno.env.get("HOME") ?? ""
     const candidates = [
@@ -60,11 +74,8 @@ export function findDimosRepo(moduleRelativePath) {
         `${home}/dimos`,
     ].filter((each) => each)
     for (const candidate of candidates) {
-        try {
-            Deno.statSync(`${candidate}/${moduleRelativePath}`)
+        if (hasAnyOf(candidate, moduleRelativePath)) {
             return candidate
-        } catch (error) {
-            continue
         }
     }
     return null
@@ -80,12 +91,10 @@ export function resolveProject({ startPaths = [], needsDimosModule = null } = {}
             if (needsDimosModule === null) {
                 return { root: found, why: "walked up from " + startPath }
             }
-            try {
-                Deno.statSync(`${found}/${needsDimosModule}`)
+            if (hasAnyOf(found, needsDimosModule)) {
                 return { root: found, why: "walked up from " + startPath }
-            } catch (error) {
-                // the right kind of project, but not one that has what is needed
             }
+            // otherwise: the right kind of project, but not one that has what is needed
         }
     }
     if (needsDimosModule !== null) {
