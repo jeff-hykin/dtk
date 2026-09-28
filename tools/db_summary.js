@@ -387,14 +387,19 @@ const summarise = (name, payload, count, times) => {
 // from the Statistics record, so nothing here needs a payload.
 const MESSAGE_INDEX_OPCODE = 0x07
 const MESSAGE_INDEX_ENTRY_BYTES = 16
+const MCAP_READS_IN_FLIGHT = 32
 
 // Returns Map<channelId, seconds[]>, or null when the file carries no message
 // indexes -- an unindexed or unchunked writer -- so the caller can fall back.
+// Each chunk's index block sits right after that chunk, so on a big file this
+// is tens of thousands of small reads scattered across it. One at a time, each
+// pays the disk's full latency (tens of ms on a busy USB drive), so they are
+// issued MCAP_READS_IN_FLIGHT at a time and parsed afterwards in chunk order.
 const logTimesFromIndexes = async (readable, chunkIndexes) => {
-    const timesById = new Map()
     if (chunkIndexes.length === 0) {
         return null
     }
+    const spans = []
     for (const chunk of chunkIndexes) {
         const offsets = [...chunk.messageIndexOffsets.values()]
         if (offsets.length === 0 || chunk.messageIndexLength === 0n) {
@@ -408,7 +413,19 @@ const logTimesFromIndexes = async (readable, chunkIndexes) => {
                 start = offset
             }
         }
-        const block = await readable.read(start, chunk.messageIndexLength)
+        spans.push([start, chunk.messageIndexLength])
+    }
+    const blocks = new Array(spans.length)
+    let next = 0
+    const worker = async () => {
+        while (next < spans.length) {
+            const index = next++
+            blocks[index] = await readable.read(...spans[index])
+        }
+    }
+    await Promise.all(Array.from({ length: MCAP_READS_IN_FLIGHT }, worker))
+    const timesById = new Map()
+    for (const block of blocks) {
         const view = new DataView(block.buffer, block.byteOffset, block.byteLength)
         let pos = 0
         while (pos + 9 <= block.byteLength) {
@@ -435,26 +452,59 @@ const logTimesFromIndexes = async (readable, chunkIndexes) => {
     return timesById
 }
 
-let streams = []
-if (isMcap) {
-    mcapFile = await Deno.open(dbPath, { read: true })
-    const size = (await mcapFile.stat()).size
-    const readable = {
+// Deno has no positional read, so concurrent reads each take their own handle
+// for the seek+read pair.
+const openReadable = async (path, handles) => {
+    const files = await Promise.all(Array.from({ length: handles }, () => Deno.open(path, { read: true })))
+    const size = (await files[0].stat()).size
+    const idle = [...files]
+    const waiting = []
+    const acquire = () => {
+        if (idle.length > 0) {
+            return Promise.resolve(idle.pop())
+        }
+        return new Promise((resolve) => waiting.push(resolve))
+    }
+    const release = (file) => {
+        const resolve = waiting.shift()
+        if (resolve) {
+            resolve(file)
+        } else {
+            idle.push(file)
+        }
+    }
+    return {
         size: async () => BigInt(size),
         read: async (offset, length) => {
             const buffer = new Uint8Array(Number(length))
-            await mcapFile.seek(Number(offset), Deno.SeekMode.Start)
-            let filled = 0
-            while (filled < buffer.length) {
-                const read = await mcapFile.read(buffer.subarray(filled))
-                if (read === null) {
-                    break
+            const file = await acquire()
+            try {
+                await file.seek(Number(offset), Deno.SeekMode.Start)
+                let filled = 0
+                while (filled < buffer.length) {
+                    const read = await file.read(buffer.subarray(filled))
+                    if (read === null) {
+                        break
+                    }
+                    filled += read
                 }
-                filled += read
+            } finally {
+                release(file)
             }
             return buffer
         },
+        close: () => {
+            for (const file of files) {
+                file.close()
+            }
+        },
     }
+}
+
+let streams = []
+if (isMcap) {
+    mcapFile = await openReadable(dbPath, MCAP_READS_IN_FLIGHT)
+    const readable = mcapFile
     const decompressHandlers = {
         zstd: (bytes, size) => zstdDecompress(bytes, new Uint8Array(Number(size))),
         lz4: (bytes) => new Uint8Array(lz4.decompress(bytes)),
