@@ -26,6 +26,7 @@ refuses to leave a file whose summary disagrees with its data.
 """
 
 import argparse
+import copy
 import json
 import fcntl
 import os
@@ -690,13 +691,15 @@ def repose_odometry(data, corrections):
 
 def rewrite_chunk(blob, renames, deleted_ids, tf_corrections=None, odom_corrections=None,
                   tf_drops=None, tf_frame_renames=None, tf_additions=None,
-                  tf_add_states=None):
+                  tf_add_states=None, prepend_channels=()):
     """Return the chunk's records with deleted channels and their messages gone
     and renamed channels renamed, plus the per-channel message index entries the
     new layout needs, plus how many tf edges were dropped. Offsets in a message
     index are relative to the start of the decompressed chunk, so they have to be
     recomputed here, not adjusted."""
     out = bytearray()
+    for channel in prepend_channels:
+        out.extend(channel.encode())
     entries = {}
     dropped = 0
     for opcode, body in walk_chunk(blob):
@@ -776,10 +779,40 @@ def plan_edit(mcap, renames, deletes):
         if declared & looking_for:
             touched.add(position)
             looking_for -= declared
+    # Some writers (lite_record, and files cut from them) declare channels at the top
+    # level, outside every chunk. Such a record cannot grow in place, so it is blanked
+    # and the renamed record goes at the head of the first chunk with the channel's
+    # messages, which is rewritten anyway.
+    top_level = {}  # channel id -> (offset, length) of its record outside the chunks
+    if looking_for:
+        for start, length in free_regions(mcap):
+            at, end = start, start + length
+            while at < end:
+                head = mcap.read_at(at, RECORD_OVERHEAD)
+                if len(head) < RECORD_OVERHEAD:
+                    break
+                opcode, size = head[0], struct.unpack_from("<Q", head, 1)[0]
+                if opcode == OP_CHANNEL:
+                    channel = Channel.parse(mcap.read_at(at + RECORD_OVERHEAD, size))
+                    if channel.id in looking_for:
+                        top_level[channel.id] = (at, RECORD_OVERHEAD + size)
+                at += RECORD_OVERHEAD + size
+    prepend = {}  # chunk position -> channel ids whose record goes at its head
+    for channel_id in list(looking_for):
+        if channel_id not in top_level:
+            continue
+        first = next((position for position, index in enumerate(mcap.chunk_indexes)
+                      if channel_id in {cid for cid, _ in index["message_index_offsets"]}), None)
+        if first is None:
+            continue
+        prepend.setdefault(first, []).append(channel_id)
+        touched.add(first)
+        looking_for.discard(channel_id)
     if looking_for:
         names = ", ".join(sorted(mcap.channels[cid].topic for cid in looking_for))
         raise SystemExit(f"could not find the channel record for {names}; refusing to guess")
-    return deleted_ids, sorted(touched)
+    blanks = [top_level[cid] for ids in prepend.values() for cid in ids]
+    return deleted_ids, sorted(touched), prepend, blanks
 
 
 def main():
@@ -979,7 +1012,9 @@ def main():
                 continue
             tf_additions[channel.id] = plan
             tf_add_states[channel.id] = {"last_static": -(1 << 62)}
-        if not tf_additions:
+        # Static edges only need somewhere to go: an existing /tf_static will do even
+        # in a file with no dynamic tf (a camera-only recording has just the static tree).
+        if not tf_additions and (plan["dynamic"] or static_channel is None):
             sys.exit("no dynamic tf2_msgs/msg/TFMessage topic in this file to add to")
 
     odom_corrections = {}
@@ -1010,7 +1045,7 @@ def main():
         verify(arguments.recording)
         return
 
-    deleted_ids, touched = plan_edit(mcap, renames, deletes)
+    deleted_ids, touched, prepend, blanks = plan_edit(mcap, renames, deletes)
     reposed = (set(tf_corrections) | set(odom_corrections) | set(tf_drops)
                | set(tf_frame_renames) | set(tf_additions))
     if reposed:
@@ -1062,9 +1097,14 @@ def main():
     for position in touched:
         index = mcap.chunk_indexes[position]
         start, end, compression, blob = mcap.read_chunk(index)
+        heads = []
+        for channel_id in prepend.get(position, []):
+            channel = copy.copy(mcap.channels[channel_id])
+            channel.topic = renames.get(channel.topic, channel.topic)
+            heads.append(channel)
         records, entries, gone = rewrite_chunk(
             blob, renames, deleted_ids, tf_corrections, odom_corrections, tf_drops,
-            tf_frame_renames, tf_additions, tf_add_states)
+            tf_frame_renames, tf_additions, tf_add_states, prepend_channels=heads)
         dropped_edges += gone
         if not entries:
             # Every message in this chunk belonged to a deleted topic. Keeping the
@@ -1110,14 +1150,14 @@ def main():
     indexes = [index for index in indexes if index is not None]
     static_edges = [each for each in added_edges if each["static"]]
     if static_edges:
-        sibling = mcap.channels[next(iter(tf_additions))]
+        sibling = mcap.channels[next(iter(tf_additions))] if tf_additions else static_channel
         write_at = append_static_tf(mcap, write_at, indexes, static_edges, static_channel, sibling)
     _write_tail(mcap, write_at, indexes, renames, deleted_ids)
 
     # Only now that the summary points somewhere else is it safe to blank the old
     # chunks: until this moment the file was still readable through them.
     reclaimed = 0
-    for offset, length in freed:
+    for offset, length in [*freed, *blanks]:
         mcap.file.seek(offset)
         mcap.file.write(filler(length))
         if arguments.reclaim:
