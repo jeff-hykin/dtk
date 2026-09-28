@@ -3,6 +3,7 @@
 
 import argparse
 import heapq
+import json
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,7 @@ Transform = typestore.types["geometry_msgs/msg/Transform"]
 TransformStamped = typestore.types["geometry_msgs/msg/TransformStamped"]
 TFMessage = typestore.types["tf2_msgs/msg/TFMessage"]
 Image = typestore.types["sensor_msgs/msg/Image"]
+CompressedImage = typestore.types["sensor_msgs/msg/CompressedImage"]
 CameraInfo = typestore.types["sensor_msgs/msg/CameraInfo"]
 RegionOfInterest = typestore.types["sensor_msgs/msg/RegionOfInterest"]
 Imu = typestore.types["sensor_msgs/msg/Imu"]
@@ -102,6 +104,15 @@ def convert_image(message, seconds):
         is_bigendian=0,
         step=int(message.width) * channels * dtype().itemsize,
         data=pixels.reshape(-1).view(np.uint8),
+    )
+
+
+def convert_compressed_image(message, seconds):
+    # the encoded bytes pass through untouched (jpeg/png/webp), so nothing is re-compressed
+    return CompressedImage(
+        header=header(seconds, message.frame_id),
+        format=str(message.format),
+        data=np.frombuffer(bytes(message.data), dtype=np.uint8),
     )
 
 
@@ -208,6 +219,7 @@ def convert_tf(message, seconds):
 
 CONVERTERS = {
     "Image": ("sensor_msgs/msg/Image", convert_image),
+    "CompressedImage": ("sensor_msgs/msg/CompressedImage", convert_compressed_image),
     "CameraInfo": ("sensor_msgs/msg/CameraInfo", convert_camera_info),
     "Imu": ("sensor_msgs/msg/Imu", convert_imu),
     "PointCloud2": ("sensor_msgs/msg/PointCloud2", convert_pointcloud),
@@ -231,6 +243,10 @@ def main():
     parser.add_argument("-o", "--out", help="output .mcap (default: <input>.mcap)")
     parser.add_argument("--limit", type=int, default=0, help="only convert the first N messages per stream")
     parser.add_argument("--streams", help="comma-separated subset of stream names")
+    parser.add_argument(
+        "--topics",
+        help="json {stream: topic} naming the mcap topic of a stream (default: /<stream>)",
+    )
     arguments = parser.parse_args()
 
     database_path = Path(arguments.database).expanduser()
@@ -238,9 +254,14 @@ def main():
 
     # Imported here, not at module scope, so other scripts can reuse the converters below
     # against dimos checkouts that have no memory2.
-    from dimos.memory2.store.sqlite import SqliteStore
+    try:
+        from dimos.memory2.store.sqlite import SqliteStore
+    except ImportError:
+        # checkouts where memory2 has been renamed to memory
+        from dimos.memory.store.sqlite import SqliteStore
 
     store = SqliteStore(path=str(database_path), must_exist=True)
+    topics = json.loads(arguments.topics) if arguments.topics else {}
     stream_names = arguments.streams.split(",") if arguments.streams else store.list_streams()
 
     with open(output_path, "wb") as output_file:
@@ -257,11 +278,10 @@ def main():
             ros_type, converter = CONVERTERS[payload_type]
             definition, _ = typestore.generate_msgdef(ros_type)
             schema_id = writer.register_schema(name=ros_type, encoding="ros2msg", data=definition.encode())
-            channel_id = writer.register_channel(
-                topic="/" + stream_name, message_encoding="cdr", schema_id=schema_id
-            )
+            topic = topics.get(stream_name, "/" + stream_name)
+            channel_id = writer.register_channel(topic=topic, message_encoding="cdr", schema_id=schema_id)
             channels[stream_name] = (channel_id, converter, ros_type)
-            print(f"  {stream_name:34s} -> /{stream_name:34s} {ros_type}", flush=True)
+            print(f"  {stream_name:34s} -> {topic:34s} {ros_type}", flush=True)
 
         for entry in skipped:
             print(f"  SKIPPED (no ROS mapping): {entry}", file=sys.stderr, flush=True)
