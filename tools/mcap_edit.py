@@ -1216,8 +1216,9 @@ def compact(mcap, path):
         # The schema and channel records that live in the data section ahead of the
         # chunks, kept in their original order. A summary-reading reader would find
         # them in the summary either way; a streaming one would not.
-        for offset, length in carried:
-            copy_span(mcap.file, out, offset, length)
+        for offset, length, opcode in carried:
+            if opcode != OP_METADATA:
+                copy_span(mcap.file, out, offset, length)
         indexes = []
         for index in sorted(mcap.chunk_indexes, key=lambda i: i["chunk_start_offset"]):
             fresh = dict(index)
@@ -1233,6 +1234,14 @@ def compact(mcap, path):
                 fresh["message_index_offsets"] = [
                     (cid, new_start + (at - old_start)) for cid, at in index["message_index_offsets"]]
             indexes.append(fresh)
+        # Metadata after the chunks, in their original order, and the summary's
+        # metadata index pointed at where each one now is.
+        moved = {}
+        for offset, length, opcode in carried:
+            if opcode == OP_METADATA:
+                moved[offset] = out.tell()
+                copy_span(mcap.file, out, offset, length)
+        mcap.other_summary = [repoint_metadata_index(raw, moved) for raw in mcap.other_summary]
         _write_tail(mcap, out.tell(), indexes, {}, set(), out=out)
         out.flush()
         os.fsync(out.fileno())
@@ -1636,9 +1645,12 @@ def carry_from_gaps(mcap, gaps, path):
     only chunks and their message indexes, so without this it would drop them.
 
     Message indexes are skipped here because `compact` already re-copies each one
-    beside its chunk. Anything else -- an attachment, a metadata record -- is
-    refused rather than guessed at: those are pointed to by offsets in the summary
-    that this function has no way to move.
+    beside its chunk. Metadata records are carried too -- dimos appends its stream
+    registry as one -- and `compact` repoints their summary index at the new
+    offsets; there can be several of one name, where the last one wins, so their
+    order is kept. Anything else, an attachment, is refused rather than guessed at.
+
+    Returns (offset, length, opcode) per record to carry, in file order.
     """
     carried = []
     for start, length in gaps:
@@ -1653,14 +1665,24 @@ def carry_from_gaps(mcap, gaps, path):
                 raise SystemExit(
                     f"{path.name}: a {hex(opcode)} record at {at:,} runs past the gap it is in; "
                     f"refusing to guess")
-            if opcode == OP_SCHEMA or opcode == OP_CHANNEL:
-                carried.append((at, span))
+            if opcode in (OP_SCHEMA, OP_CHANNEL, OP_METADATA):
+                carried.append((at, span, opcode))
             elif opcode not in (OP_FILLER, OP_MESSAGE_INDEX):
                 raise SystemExit(
                     f"{path.name}: {size:,} bytes at {at:,} are a {hex(opcode)} record, neither "
                     f"filler nor something compaction knows how to move; refusing to guess")
             at += span
     return carried
+
+
+def repoint_metadata_index(raw, moved):
+    """A MetadataIndex summary record with its offset moved; anything else unchanged."""
+    if raw[0] != OP_METADATA_INDEX:
+        return raw
+    offset = struct.unpack_from("<Q", raw, RECORD_OVERHEAD)[0]
+    if offset not in moved:
+        raise SystemExit(f"a metadata index points at {offset:,}, where compaction found no metadata record")
+    return raw[:RECORD_OVERHEAD] + struct.pack("<Q", moved[offset]) + raw[RECORD_OVERHEAD + 8:]
 
 
 def copy_span(source, destination, offset, length, block=8 << 20):
