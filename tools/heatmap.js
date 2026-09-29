@@ -648,6 +648,77 @@ async function encodePng(rgb, width, height) {
     return png
 }
 
+// --- labels ----------------------------------------------------------------
+// A 5x7 bitmap font, just enough for measurements and a title: each glyph is
+// seven rows, each row five bits, most significant on the left.
+
+const GLYPHS = {
+    "0": [14, 17, 19, 21, 25, 17, 14], "1": [4, 12, 4, 4, 4, 4, 14], "2": [14, 17, 1, 2, 4, 8, 31],
+    "3": [31, 2, 4, 2, 1, 17, 14], "4": [2, 6, 10, 18, 31, 2, 2], "5": [31, 16, 30, 1, 1, 17, 14],
+    "6": [6, 8, 16, 30, 17, 17, 14], "7": [31, 1, 2, 4, 8, 8, 8], "8": [14, 17, 17, 14, 17, 17, 14],
+    "9": [14, 17, 17, 15, 1, 2, 12], "A": [14, 17, 17, 31, 17, 17, 17], "B": [30, 17, 17, 30, 17, 17, 30],
+    "C": [14, 17, 16, 16, 16, 17, 14], "D": [28, 18, 17, 17, 17, 18, 28], "E": [31, 16, 16, 30, 16, 16, 31],
+    "F": [31, 16, 16, 30, 16, 16, 16], "G": [14, 17, 16, 23, 17, 17, 15], "H": [17, 17, 17, 31, 17, 17, 17],
+    "I": [14, 4, 4, 4, 4, 4, 14], "J": [7, 2, 2, 2, 2, 18, 12], "K": [17, 18, 20, 24, 20, 18, 17],
+    "L": [16, 16, 16, 16, 16, 16, 31], "M": [17, 27, 21, 21, 17, 17, 17], "N": [17, 17, 25, 21, 19, 17, 17],
+    "O": [14, 17, 17, 17, 17, 17, 14], "P": [30, 17, 17, 30, 16, 16, 16], "Q": [14, 17, 17, 17, 21, 18, 13],
+    "R": [30, 17, 17, 30, 20, 18, 17], "S": [15, 16, 16, 14, 1, 1, 30], "T": [31, 4, 4, 4, 4, 4, 4],
+    "U": [17, 17, 17, 17, 17, 17, 14], "V": [17, 17, 17, 17, 17, 10, 4], "W": [17, 17, 17, 21, 21, 21, 10],
+    "X": [17, 17, 10, 4, 10, 17, 17], "Y": [17, 17, 10, 4, 4, 4, 4], "Z": [31, 1, 2, 4, 8, 16, 31],
+    "-": [0, 0, 0, 31, 0, 0, 0], ".": [0, 0, 0, 0, 0, 12, 12], ",": [0, 0, 0, 0, 12, 4, 8],
+    "(": [2, 4, 8, 8, 8, 4, 2], ")": [8, 4, 2, 2, 2, 4, 8], ":": [0, 12, 12, 0, 12, 12, 0],
+    "/": [1, 1, 2, 4, 8, 16, 16], "_": [0, 0, 0, 0, 0, 0, 31], "+": [0, 4, 4, 31, 4, 4, 0],
+    "=": [0, 0, 31, 0, 31, 0, 0], " ": [0, 0, 0, 0, 0, 0, 0],
+}
+
+/** Pixel width of `text` at `size` (pixels per font dot). */
+function textWidth(text, size) {
+    return text.length * 6 * size - size
+}
+
+/** Draw `text` with its top-left at (x, y); anchor "center"/"right" shifts it left. */
+function drawText(image, text, x, y, size, colour, anchor = "left") {
+    const start = anchor === "center" ? x - textWidth(text, size) / 2 : anchor === "right" ? x - textWidth(text, size) : x
+    let penX = Math.round(start)
+    for (const character of text.toUpperCase()) {
+        const rows = GLYPHS[character] ?? GLYPHS[" "]
+        for (let row = 0; row < 7; row++) {
+            for (let col = 0; col < 5; col++) {
+                if (rows[row] & (16 >> col)) {
+                    fillRect(image, penX + col * size, y + row * size, size, size, colour)
+                }
+            }
+        }
+        penX += 6 * size
+    }
+}
+
+function fillRect(image, x, y, w, h, [r, g, b]) {
+    for (let py = Math.max(0, y); py < Math.min(image.height, y + h); py++) {
+        for (let px = Math.max(0, x); px < Math.min(image.width, x + w); px++) {
+            const at = (py * image.width + px) * 3
+            image.rgb[at] = r
+            image.rgb[at + 1] = g
+            image.rgb[at + 2] = b
+        }
+    }
+}
+
+/** Grid spacing: the smallest "nice" metre step that leaves at least `minPx` between lines. */
+function niceStep(pixelsPerMetre, minPx) {
+    for (const step of [0.5, 1, 2, 5, 10, 20, 50, 100]) {
+        if (step * pixelsPerMetre >= minPx) {
+            return step
+        }
+    }
+    return 100
+}
+
+/** "12" rather than "12.0", "2.5" rather than "2.50". */
+function metres(value) {
+    return String(Math.round(value * 100) / 100)
+}
+
 // --- colour ----------------------------------------------------------------
 
 /** Turbo-ish ramp: blue at the start of the run, red at the end. */
@@ -699,6 +770,111 @@ function pickStream(source, kind, requested, preferred = []) {
     return candidates[0]
 }
 
+/**
+ * The turn, in radians within a quarter circle, that lines the walls up with
+ * the axes. Walls are long runs of points, so when they run along an axis the
+ * points pile into a few rows and columns; the sum of squared bin counts peaks
+ * there. Searched coarse to fine over 0-90 degrees.
+ */
+function wallAngle(xy) {
+    const stride = Math.max(1, Math.floor(xy.length / 2 / 200000)) * 2
+    const peakiness = (angle) => {
+        const cos = Math.cos(-angle), sin = Math.sin(-angle)
+        const rows = new Map(), cols = new Map()
+        for (let i = 0; i < xy.length; i += stride) {
+            const x = Math.round((xy[i] * cos - xy[i + 1] * sin) / 0.1)
+            const y = Math.round((xy[i] * sin + xy[i + 1] * cos) / 0.1)
+            cols.set(x, (cols.get(x) ?? 0) + 1)
+            rows.set(y, (rows.get(y) ?? 0) + 1)
+        }
+        let score = 0
+        for (const n of cols.values()) { score += n * n }
+        for (const n of rows.values()) { score += n * n }
+        return score
+    }
+    let best = 0, bestScore = -1
+    for (let degrees = 0; degrees < 90; degrees += 1) {
+        const score = peakiness(degrees * Math.PI / 180)
+        if (score > bestScore) { best = degrees; bestScore = score }
+    }
+    const coarse = best
+    for (let degrees = coarse - 1; degrees <= coarse + 1; degrees += 0.1) {
+        const score = peakiness(degrees * Math.PI / 180)
+        if (score > bestScore) { best = degrees; bestScore = score }
+    }
+    return best * Math.PI / 180
+}
+
+// --- measured sheet --------------------------------------------------------
+// The plan framed like a drawing: metre labels on every major grid line along
+// all four edges, a scale bar, and the overall dimensions, so a distance can be
+// read off the image without knowing its pixel pitch.
+
+function measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixelsPerMetre, title, low, high, squaredBy }) {
+    const size = 2
+    const ink = [150, 180, 225]
+    const faint = [90, 110, 140]
+    const labelWidth = textWidth(metres(-Math.max(Math.abs(minY), Math.abs(maxY), 100)), size)
+    const left = labelWidth + 24
+    const right = labelWidth + 24
+    const top = (title ? 44 : 0) + 36
+    const bottom = 100
+    const sheet = { width: map.width + left + right, height: map.height + top + bottom }
+    sheet.rgb = new Uint8Array(sheet.width * sheet.height * 3)
+    fillRect(sheet, 0, 0, sheet.width, sheet.height, [8, 10, 14])
+    for (let y = 0; y < map.height; y++) {
+        sheet.rgb.set(map.rgb.subarray(y * map.width * 3, (y + 1) * map.width * 3), ((y + top) * sheet.width + left) * 3)
+    }
+    // A border round the plan, one pixel outside it.
+    fillRect(sheet, left - 1, top - 1, map.width + 2, 1, faint)
+    fillRect(sheet, left - 1, top + map.height, map.width + 2, 1, faint)
+    fillRect(sheet, left - 1, top - 1, 1, map.height + 2, faint)
+    fillRect(sheet, left + map.width, top - 1, 1, map.height + 2, faint)
+
+    for (let gx = Math.ceil(minX / major) * major; gx <= maxX; gx += major) {
+        const px = left + toPx(gx, 0)[0]
+        fillRect(sheet, px, top - 7, 1, 6, ink)
+        fillRect(sheet, px, top + map.height + 1, 1, 6, ink)
+        drawText(sheet, metres(gx), px, top - 7 - 7 * size - 4, size, ink, "center")
+        drawText(sheet, metres(gx), px, top + map.height + 10, size, ink, "center")
+    }
+    for (let gy = Math.ceil(minY / major) * major; gy <= maxY; gy += major) {
+        const py = top + toPx(0, gy)[1]
+        fillRect(sheet, left - 7, py, 6, 1, ink)
+        fillRect(sheet, left + map.width + 1, py, 6, 1, ink)
+        drawText(sheet, metres(gy), left - 10, py - Math.round(3.5 * size), size, ink, "right")
+        drawText(sheet, metres(gy), left + map.width + 10, py - Math.round(3.5 * size), size, ink)
+    }
+
+    // Scale bar: the largest round length that fits in a third of the width,
+    // split into alternating metre blocks like a surveyor's bar.
+    const barMetres = [1, 2, 5, 10, 20, 50].filter((m) => m * pixelsPerMetre <= map.width / 3).pop() ?? 1
+    const barY = top + map.height + 36
+    const segments = barMetres <= 10 ? barMetres : barMetres / 5
+    const segmentPx = (barMetres * pixelsPerMetre) / segments
+    for (let i = 0; i < segments; i++) {
+        const x0 = Math.round(left + i * segmentPx)
+        const x1 = Math.round(left + (i + 1) * segmentPx)
+        fillRect(sheet, x0, barY, x1 - x0, 8, i % 2 ? [8, 10, 14] : ink)
+    }
+    fillRect(sheet, left, barY, Math.round(barMetres * pixelsPerMetre), 1, ink)
+    fillRect(sheet, left, barY + 7, Math.round(barMetres * pixelsPerMetre), 1, ink)
+    fillRect(sheet, left, barY - 3, 1, 14, ink)
+    fillRect(sheet, Math.round(left + barMetres * pixelsPerMetre), barY - 3, 1, 14, ink)
+    drawText(sheet, `${barMetres} M`, Math.round(left + barMetres * pixelsPerMetre) + 10, barY - 3, size, ink)
+
+    const band = Number.isFinite(low) || Number.isFinite(high)
+        ? `   Z ${Number.isFinite(low) ? metres(low) : "-"} TO ${Number.isFinite(high) ? metres(high) : "-"} M`
+        : ""
+    const turned = squaredBy ? `   TURNED ${metres(Math.round(squaredBy * 1800 / Math.PI) / 10)} DEG` : ""
+    const caption = `${metres(maxX - minX)} X ${metres(maxY - minY)} M   GRID ${metres(minor)} M / ${metres(major)} M${band}${turned}`
+    drawText(sheet, caption, left, barY + 24, size, faint)
+    if (title) {
+        drawText(sheet, title, left, 12, 3, [220, 230, 245])
+    }
+    return sheet
+}
+
 // --- main ------------------------------------------------------------------
 
 await new Command()
@@ -719,6 +895,10 @@ await new Command()
     .option("--min-height <m:number>", "Drop points below this world z, in metres")
     .option("--max-height <m:number>", "Drop points above this world z, in metres")
     .option("--stride <n:integer>", "Use every Nth lidar scan", { default: 1 })
+    .option("--title <text:string>", "A heading drawn above the plan, e.g. the floor's name")
+    .option("--square [degrees:string]", "Rotate the plan so its walls run along the grid; a number of degrees, or no value to find it from the walls")
+    .option("--crop <m:number>", "Draw only this far beyond the walked path, dropping returns seen through windows")
+    .option("--no-measurements", "Draw the bare heatmap, with no metre grid, scale bar or dimensions")
     .action(async (options, recording, output) => {
         const target = output ?? recording.replace(/\.(db|mcap)$/, "") + "_heatmap.png"
         const source = recording.endsWith(".mcap") ? await mcapSource(recording) : sqliteSource(recording)
@@ -851,6 +1031,9 @@ await new Command()
 
         const low = options.minHeight ?? -Infinity
         const high = options.maxHeight ?? Infinity
+        // A height band is one floor of a building, so only the part of the walk
+        // on that floor belongs on its plan; the stairs between are left out.
+        const onFloor = (pose) => pose.z >= low && pose.z <= high
         const keep = []
         for (const cloud of clouds) {
             for (let i = 0; i < cloud.length; i += 3) {
@@ -859,6 +1042,35 @@ await new Command()
                     keep.push(cloud[i], cloud[i + 1])
                 }
             }
+        }
+
+        // Squaring turns the whole plan about the origin so the building's walls
+        // run along the grid, the way a floor plan is drawn.
+        let squaredBy = 0
+        if (options.square !== undefined) {
+            squaredBy = options.square === true ? wallAngle(keep) : Number(options.square) * Math.PI / 180
+            const cos = Math.cos(-squaredBy), sin = Math.sin(-squaredBy)
+            const turn = (x, y) => [x * cos - y * sin, x * sin + y * cos]
+            for (let i = 0; i < keep.length; i += 2) {
+                [keep[i], keep[i + 1]] = turn(keep[i], keep[i + 1])
+            }
+            for (const pose of odom) {
+                [pose.x, pose.y] = turn(pose.x, pose.y)
+            }
+            console.log(`heatmap: squared by ${(squaredBy * 180 / Math.PI).toFixed(1)} degrees`)
+        }
+        if (options.crop !== undefined) {
+            const walked = odom.filter(onFloor)
+            const [x0, x1] = [Math.min(...walked.map((p) => p.x)) - options.crop, Math.max(...walked.map((p) => p.x)) + options.crop]
+            const [y0, y1] = [Math.min(...walked.map((p) => p.y)) - options.crop, Math.max(...walked.map((p) => p.y)) + options.crop]
+            let kept = 0
+            for (let i = 0; i < keep.length; i += 2) {
+                if (keep[i] >= x0 && keep[i] <= x1 && keep[i + 1] >= y0 && keep[i + 1] <= y1) {
+                    keep[kept++] = keep[i]
+                    keep[kept++] = keep[i + 1]
+                }
+            }
+            keep.length = kept
         }
 
         let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
@@ -872,7 +1084,9 @@ await new Command()
             note(keep[i], keep[i + 1])
         }
         for (const p of odom) {
-            note(p.x, p.y)
+            if (onFloor(p)) {
+                note(p.x, p.y)
+            }
         }
 
         const margin = 1.0
@@ -880,15 +1094,20 @@ await new Command()
         if (options.extent) {
             [minX, minY, maxX, maxY] = options.extent.split(/[,_]/).map(Number)
         }
-        let width = options.width ?? 1600
-        if (isMap && options.width === undefined && !options.extent) {
-            // A map is voxels, so draw one pixel per voxel with the grid snapped to
+        let width = options.width ?? (isMap ? Math.min(4096, Math.round((maxX - minX) / 0.08)) : 1600)
+        // Pixels per voxel side; more than one when a cropped map would otherwise be tiny.
+        let cell = 1
+        const voxel = 0.08
+        const onVoxelGrid = isMap && options.width === undefined && squaredBy === 0
+        if (onVoxelGrid) {
+            // A map is voxels, so draw whole pixels per voxel with the grid snapped to
             // the voxel edges; any other pitch beats against the grid as moire.
-            const voxel = 0.08
             minX = Math.floor(minX / voxel) * voxel
             minY = Math.floor(minY / voxel) * voxel
-            width = Math.min(4096, Math.round((maxX - minX) / voxel))
-            maxX = minX + width * voxel
+            const columns = Math.min(4096, Math.round((maxX - minX) / voxel))
+            cell = Math.max(1, Math.floor(1600 / columns))
+            width = columns * cell
+            maxX = minX + columns * voxel
             maxY = minY + Math.round((maxY - minY) / voxel) * voxel
         }
         console.log(`heatmap: extent ${[minX, minY, maxX, maxY].map((v) => v.toFixed(2)).join(",")}`)
@@ -897,7 +1116,7 @@ await new Command()
         // A map's points are voxel centres, half a pixel in from the snapped grid,
         // so they are floored onto their voxel; rounding would flip on float noise
         // and alias the grid. Scans and the path round to the nearest pixel.
-        const pixel = isMap ? Math.floor : Math.round
+        const pixel = onVoxelGrid ? Math.floor : Math.round
         const toPx = (x, y) => [
             pixel((x - minX) * scale),
             height - 1 - pixel((y - minY) * scale),
@@ -907,6 +1126,21 @@ await new Command()
         // stray return should stay dim while a wall seen a thousand times is bright.
         const density = new Float32Array(width * height)
         for (let i = 0; i < keep.length; i += 2) {
+            if (onVoxelGrid) {
+                // The whole cell of the voxel, counted from its snapped corner.
+                const column = Math.floor((keep[i] - minX) / voxel)
+                const row = Math.floor((maxY - keep[i + 1]) / voxel)
+                for (let dy = 0; dy < cell; dy++) {
+                    for (let dx = 0; dx < cell; dx++) {
+                        const px = column * cell + dx
+                        const py = row * cell + dy
+                        if (px >= 0 && px < width && py >= 0 && py < height) {
+                            density[py * width + px] += 1
+                        }
+                    }
+                }
+                continue
+            }
             const [px, py] = toPx(keep[i], keep[i + 1])
             if (px >= 0 && px < width && py >= 0 && py < height) {
                 density[py * width + px] += 1
@@ -925,6 +1159,21 @@ await new Command()
             rgb[i * 3] = 12
             rgb[i * 3 + 1] = 14
             rgb[i * 3 + 2] = 18
+        }
+        // The metre grid goes down before the cloud, so walls are drawn over it.
+        const pixelsPerMetre = scale
+        const minor = niceStep(pixelsPerMetre, 10)
+        const major = niceStep(pixelsPerMetre, 60)
+        if (options.measurements) {
+            const map = { rgb, width, height }
+            for (const [step, colour] of [[minor, [22, 30, 44]], [major, [38, 58, 92]]]) {
+                for (let gx = Math.ceil(minX / step) * step; gx <= maxX; gx += step) {
+                    fillRect(map, toPx(gx, 0)[0], 0, 1, height, colour)
+                }
+                for (let gy = Math.ceil(minY / step) * step; gy <= maxY; gy += step) {
+                    fillRect(map, 0, toPx(0, gy)[1], width, 1, colour)
+                }
+            }
         }
         for (let i = 0; i < density.length; i++) {
             if (density[i] > 0) {
@@ -956,6 +1205,10 @@ await new Command()
         let previous = toPx(odom[0].x, odom[0].y)
         for (let i = 1; i < odom.length; i++) {
             const current = toPx(odom[i].x, odom[i].y)
+            if (!onFloor(odom[i]) || !onFloor(odom[i - 1])) {
+                previous = current
+                continue
+            }
             const [r, g, b] = pathColour(i / (odom.length - 1))
             const steps = Math.max(Math.abs(current[0] - previous[0]), Math.abs(current[1] - previous[1]), 1)
             for (let s = 0; s <= steps; s++) {
@@ -967,12 +1220,19 @@ await new Command()
         }
         const first = toPx(odom[0].x, odom[0].y)
         const last = toPx(odom[odom.length - 1].x, odom[odom.length - 1].y)
-        plot(first[0], first[1], 255, 255, 255, 4)
-        plot(first[0], first[1], 64, 110, 255, 3)
-        plot(last[0], last[1], 255, 255, 255, 4)
-        plot(last[0], last[1], 255, 70, 70, 3)
+        if (onFloor(odom[0])) {
+            plot(first[0], first[1], 255, 255, 255, 4)
+            plot(first[0], first[1], 64, 110, 255, 3)
+        }
+        if (onFloor(odom[odom.length - 1])) {
+            plot(last[0], last[1], 255, 255, 255, 4)
+            plot(last[0], last[1], 255, 70, 70, 3)
+        }
 
-        await Deno.writeFile(target, await encodePng(rgb, width, height))
+        const sheet = options.measurements
+            ? measuredSheet({ rgb, width, height }, { minX, minY, maxX, maxY, toPx, minor, major, pixelsPerMetre, title: options.title, low, high, squaredBy })
+            : { rgb, width, height }
+        await Deno.writeFile(target, await encodePng(sheet.rgb, sheet.width, sheet.height))
         const span = Math.hypot(maxX - minX - 2 * margin, maxY - minY - 2 * margin)
         console.log(`heatmap: ${odom.length} poses, ${clouds.length} of ${scanCount} scans, ${keep.length / 2} points drawn`)
         console.log(`heatmap: ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} m, diagonal ${span.toFixed(1)} m`)
