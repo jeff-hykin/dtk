@@ -185,6 +185,14 @@ function sqliteSource(path) {
             }
             return out
         },
+        each(stream, kind, stride, visit) {
+            const ids = db.prepare(`SELECT id FROM ${stream} ORDER BY ts`).values()
+            const one = db.prepare(`SELECT o.ts, b.data FROM ${stream}_blob b JOIN ${stream} o ON o.id = b.id WHERE o.id = ?`)
+            for (let index = 0; index < ids.length; index += stride) {
+                const [ts, data] = one.values(ids[index][0])[0]
+                visit({ ts, message: LCM_DECODERS[kind](uncompress(stream, new Uint8Array(data))) })
+            }
+        },
         close: () => db.close(),
     }
 }
@@ -246,8 +254,17 @@ async function mcapSource(path) {
             if (last) {
                 // Only the newest message is wanted, so nothing before it is decoded:
                 // a map's snapshots are each tens of megabytes, and there are hundreds.
+                // Only the chunks that end last are opened: the summary says which
+                // chunks hold the channel and when each one ends.
+                let lastChunk
+                for (const chunk of reader.chunkIndexes) {
+                    if (chunk.messageIndexOffsets.has(channel.id) && (lastChunk === undefined || chunk.messageEndTime > lastChunk.messageEndTime)) {
+                        lastChunk = chunk
+                    }
+                }
+                const startTime = lastChunk?.messageStartTime
                 let newest
-                for await (const message of reader.readMessages({ topics: [channel.topic] })) {
+                for await (const message of reader.readMessages({ topics: [channel.topic], startTime })) {
                     if (newest === undefined || message.logTime > newest.logTime) {
                         newest = message
                     }
@@ -267,6 +284,18 @@ async function mcapSource(path) {
             }
             out.sort((a, b) => a.ts - b.ts)
             return out
+        },
+        /** Like read, but hands over each message as it is decoded, so a stream bigger than memory still fits. */
+        async each(stream, kind, stride, visit) {
+            const channel = channelFor(stream)
+            const decode = channel.messageEncoding === "cdr" ? CDR_DECODERS[kind] : LCM_DECODERS[kind]
+            let index = 0
+            for await (const message of reader.readMessages({ topics: [channel.topic] })) {
+                if (index++ % stride !== 0) {
+                    continue
+                }
+                visit({ ts: Number(message.logTime) / 1e9, message: decode(message.data) })
+            }
         },
         close: () => file.close(),
     }
@@ -805,12 +834,221 @@ function wallAngle(xy) {
     return best * Math.PI / 180
 }
 
+/** The grid a voxel map sits on: the most common small gap between its sorted distinct x values. */
+function voxelPitch(xyz) {
+    const xs = [...new Set(Array.from({ length: Math.min(20000, xyz.length / 3) }, (_, i) => Math.round(xyz[i * 3] * 1000)))].sort((a, b) => a - b)
+    const gaps = new Map()
+    for (let i = 1; i < xs.length; i++) {
+        const gap = xs[i] - xs[i - 1]
+        if (gap > 5) {
+            gaps.set(gap, (gaps.get(gap) ?? 0) + 1)
+        }
+    }
+    const best = [...gaps].sort((a, b) => b[1] - a[1])[0]
+    return best ? best[0] / 1000 : 0.08
+}
+
+/** The x, y centre of a packed voxel key (see `bin`). */
+function voxelCentre(key, voxel) {
+    const xy = Math.floor(key / 2 ** 16)
+    const ix = Math.floor(xy / 2 ** 18) - 2 ** 17
+    const iy = (xy % 2 ** 18) - 2 ** 17
+    return [(ix + 0.5) * voxel, (iy + 0.5) * voxel]
+}
+
+/** Draw one height band: its voxels as a top-down density, the path on that floor, and the measurements. */
+async function renderSlice(slice, { odom, voxel, squaredBy, isMap, options }) {
+    const { low, high, target } = slice
+    // A voxel a scan stream hit only once is noise more often than wall; a map's
+    // voxels are each already a surface, so they all count.
+    const minimumHits = isMap ? 1 : 2
+    // Columns: how many distinct voxels stack over each plan cell.
+    const columns = new Map()
+    for (const [key, hits] of slice.voxels) {
+        if (hits >= minimumHits) {
+            const xy = Math.floor(key / 2 ** 16)
+            columns.set(xy, (columns.get(xy) ?? 0) + 1)
+        }
+    }
+    slice.voxels = null
+    const keep = []
+    const weight = []
+    for (const [xy, count] of columns) {
+        const [x, y] = voxelCentre(xy * 2 ** 16, voxel)
+        keep.push(x, y)
+        weight.push(count)
+    }
+
+    // A height band is one floor of a building, so only the part of the walk
+    // on that floor belongs on its plan; the stairs between are left out.
+    const onFloor = (pose) => pose.z >= low && pose.z <= high
+    const walked = odom.filter(onFloor)
+    if (options.crop !== undefined && walked.length > 0) {
+        const x0 = Math.min(...walked.map((p) => p.x)) - options.crop
+        const x1 = Math.max(...walked.map((p) => p.x)) + options.crop
+        const y0 = Math.min(...walked.map((p) => p.y)) - options.crop
+        const y1 = Math.max(...walked.map((p) => p.y)) + options.crop
+        let kept = 0
+        for (let i = 0; i < keep.length; i += 2) {
+            if (keep[i] >= x0 && keep[i] <= x1 && keep[i + 1] >= y0 && keep[i + 1] <= y1) {
+                weight[kept / 2] = weight[i / 2]
+                keep[kept++] = keep[i]
+                keep[kept++] = keep[i + 1]
+            }
+        }
+        keep.length = kept
+        weight.length = kept / 2
+    }
+
+    let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
+    const note = (x, y) => {
+        if (x < minX) { minX = x }
+        if (x > maxX) { maxX = x }
+        if (y < minY) { minY = y }
+        if (y > maxY) { maxY = y }
+    }
+    for (let i = 0; i < keep.length; i += 2) {
+        note(keep[i], keep[i + 1])
+    }
+    if (options.path) {
+        for (const p of walked) {
+            note(p.x, p.y)
+        }
+    }
+    const margin = 1.0
+    minX -= margin; maxX += margin; minY -= margin; maxY += margin
+    if (options.extent) {
+        [minX, minY, maxX, maxY] = options.extent.split(/[,_]/).map(Number)
+    }
+
+    // The plan is drawn on the voxel grid itself, a whole number of pixels per
+    // voxel, since any other pitch beats against the grid as moire. A forced
+    // --width gives that up and draws each voxel as a square of its own size.
+    let width = options.width ?? 1600
+    let cell = 1
+    const onVoxelGrid = options.width === undefined
+    if (onVoxelGrid) {
+        minX = Math.floor(minX / voxel) * voxel
+        minY = Math.floor(minY / voxel) * voxel
+        const count = Math.min(4096, Math.round((maxX - minX) / voxel))
+        const longest = Math.max(count, Math.round((maxY - minY) / voxel))
+        cell = Math.max(1, Math.round(2000 / longest))
+        width = count * cell
+        maxX = minX + count * voxel
+        maxY = minY + Math.round((maxY - minY) / voxel) * voxel
+    }
+    console.log(`heatmap: ${target} extent ${[minX, minY, maxX, maxY].map((v) => v.toFixed(2)).join(",")}`)
+    const scale = width / (maxX - minX)
+    const height = Math.max(1, Math.round((maxY - minY) * scale))
+    const toPx = (x, y) => [
+        Math.round((x - minX) * scale),
+        height - 1 - Math.round((y - minY) * scale),
+    ]
+
+    const density = new Float32Array(width * height)
+    const splat = onVoxelGrid ? cell : Math.max(1, Math.round(voxel * scale))
+    for (let i = 0; i < keep.length; i += 2) {
+        let x0, y0
+        if (onVoxelGrid) {
+            x0 = Math.floor((keep[i] - minX) / voxel) * cell
+            y0 = Math.floor((maxY - keep[i + 1]) / voxel) * cell
+        } else {
+            const [cx, cy] = toPx(keep[i], keep[i + 1])
+            x0 = cx - Math.floor((splat - 1) / 2)
+            y0 = cy - Math.floor((splat - 1) / 2)
+        }
+        for (let dy = 0; dy < splat; dy++) {
+            for (let dx = 0; dx < splat; dx++) {
+                const px = x0 + dx
+                const py = y0 + dy
+                if (px >= 0 && px < width && py >= 0 && py < height) {
+                    density[py * width + px] = Math.max(density[py * width + px], weight[i / 2])
+                }
+            }
+        }
+    }
+    let peak = 0
+    for (const value of density) {
+        if (value > peak) {
+            peak = value
+        }
+    }
+    // A log ramp: a column one voxel deep stays dim, a full-height wall is bright.
+    const ceiling = Math.max(1, peak * 0.5)
+
+    const rgb = new Uint8Array(width * height * 3)
+    for (let i = 0; i < width * height; i++) {
+        rgb[i * 3] = 12
+        rgb[i * 3 + 1] = 14
+        rgb[i * 3 + 2] = 18
+    }
+    // The metre grid goes down before the cloud, so walls are drawn over it.
+    const minor = niceStep(scale, 10)
+    const major = niceStep(scale, 60)
+    const map = { rgb, width, height }
+    if (options.measurements) {
+        for (const [step, colour] of [[minor, [22, 30, 44]], [major, [38, 58, 92]]]) {
+            for (let gx = Math.ceil(minX / step) * step; gx <= maxX; gx += step) {
+                fillRect(map, toPx(gx, 0)[0], 0, 1, height, colour)
+            }
+            for (let gy = Math.ceil(minY / step) * step; gy <= maxY; gy += step) {
+                fillRect(map, 0, toPx(0, gy)[1], width, 1, colour)
+            }
+        }
+    }
+    for (let i = 0; i < density.length; i++) {
+        if (density[i] > 0) {
+            const t = Math.min(1, Math.log1p(density[i]) / Math.log1p(ceiling))
+            const level = Math.round(60 + t * 190)
+            rgb[i * 3] = level
+            rgb[i * 3 + 1] = level
+            rgb[i * 3 + 2] = Math.min(255, Math.round(level * 0.95 + 12))
+        }
+    }
+
+    // Path last, so it is never buried by the cloud, and drawn as joined
+    // segments: at 30 Hz the poses are far enough apart to read as dots.
+    if (options.path && walked.length > 0) {
+        const plot = (x, y, [r, g, b], radius) => fillRect(map, x - radius, y - radius, 2 * radius + 1, 2 * radius + 1, [r, g, b])
+        let previous = toPx(odom[0].x, odom[0].y)
+        for (let i = 1; i < odom.length; i++) {
+            const current = toPx(odom[i].x, odom[i].y)
+            if (onFloor(odom[i]) && onFloor(odom[i - 1])) {
+                const colour = pathColour(i / (odom.length - 1))
+                const steps = Math.max(Math.abs(current[0] - previous[0]), Math.abs(current[1] - previous[1]), 1)
+                for (let s = 0; s <= steps; s++) {
+                    plot(
+                        Math.round(previous[0] + ((current[0] - previous[0]) * s) / steps),
+                        Math.round(previous[1] + ((current[1] - previous[1]) * s) / steps),
+                        colour,
+                        1,
+                    )
+                }
+            }
+            previous = current
+        }
+        for (const [pose, colour] of [[odom[0], [64, 110, 255]], [odom[odom.length - 1], [255, 70, 70]]]) {
+            if (onFloor(pose)) {
+                const [x, y] = toPx(pose.x, pose.y)
+                plot(x, y, [255, 255, 255], 4)
+                plot(x, y, colour, 3)
+            }
+        }
+    }
+
+    const sheet = options.measurements
+        ? measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixelsPerMetre: scale, title: slice.title, low, high, squaredBy, voxel })
+        : map
+    await Deno.writeFile(target, await encodePng(sheet.rgb, sheet.width, sheet.height))
+    console.log(`heatmap: ${target}: ${keep.length / 2} cells, ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} m`)
+}
+
 // --- measured sheet --------------------------------------------------------
 // The plan framed like a drawing: metre labels on every major grid line along
 // all four edges, a scale bar, and the overall dimensions, so a distance can be
 // read off the image without knowing its pixel pitch.
 
-function measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixelsPerMetre, title, low, high, squaredBy }) {
+function measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixelsPerMetre, title, low, high, squaredBy, voxel }) {
     const size = 2
     const ink = [150, 180, 225]
     const faint = [90, 110, 140]
@@ -867,7 +1105,7 @@ function measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixels
         ? `   Z ${Number.isFinite(low) ? metres(low) : "-"} TO ${Number.isFinite(high) ? metres(high) : "-"} M`
         : ""
     const turned = squaredBy ? `   TURNED ${metres(Math.round(squaredBy * 1800 / Math.PI) / 10)} DEG` : ""
-    const caption = `${metres(maxX - minX)} X ${metres(maxY - minY)} M   GRID ${metres(minor)} M / ${metres(major)} M${band}${turned}`
+    const caption = `${metres(maxX - minX)} X ${metres(maxY - minY)} M   GRID ${metres(minor)} M / ${metres(major)} M   VOXEL ${metres(voxel * 100)} CM${band}${turned}`
     drawText(sheet, caption, left, barY + 24, size, faint)
     if (title) {
         drawText(sheet, title, left, 12, 3, [220, 230, 245])
@@ -889,11 +1127,19 @@ await new Command()
     .option("-w, --width <px:integer>", "Image width in pixels (default 1600; for a map, one pixel per 0.08 m voxel)")
     .option("--cloud <stream:string>", "Point cloud stream (default global_map, then pointlio_lidar, then lidar, then the only PointCloud2 stream)")
     .option("--tf <stream:string>", "The tf stream everything is placed through (default tf)")
+    .option("--odom <stream:string>", "Take the path from this odometry stream rather than tf (default pointlio_odometry when drawing a map, which then needs no tf at all)")
     .option("--body <frame:string>", "The frame whose path is drawn, chained up to the tf root", { default: "base_link" })
     .option("--align-to <stream:string>", "Rigidly align onto this odometry stream's frame")
     .option("--extent <minX_minY_maxX_maxY:string>", "Force the world extent, for comparable renders (commas or underscores)")
     .option("--min-height <m:number>", "Drop points below this world z, in metres")
     .option("--max-height <m:number>", "Drop points above this world z, in metres")
+    .option(
+        "--slice <spec:string>",
+        "out.png:minZ:maxZ[:title], one render per height band from a single read, e.g. floor1.png:-5.2:-3.3:FLOOR 1 (repeatable; replaces output, --min/--max-height and --title)",
+        { collect: true },
+    )
+    .option("--voxel <m:number>", "Plan resolution: points are binned into voxels this size (default 0.08, the map's own; go finer with a per-scan --cloud)")
+    .option("--no-path", "Leave the walked path off the plan")
     .option("--stride <n:integer>", "Use every Nth lidar scan", { default: 1 })
     .option("--title <text:string>", "A heading drawn above the plan, e.g. the floor's name")
     .option("--square [degrees:string]", "Rotate the plan so its walls run along the grid; a number of degrees, or no value to find it from the walls")
@@ -911,31 +1157,61 @@ await new Command()
         const readOdometry = async (stream) =>
             (await source.read(stream, "Odometry")).map((row) => ({ ts: row.ts, ...odometryPose(row.message) }))
 
-        const transforms = (await source.read(options.tf, "TFMessage")).map((row) => ({ ts: row.ts, edges: tfEdges(row.message, row.ts) }))
-        if (transforms.length === 0) {
-            console.error(`heatmap: no ${options.tf} in ${recording}`)
-            Deno.exit(1)
-        }
-        const timeline = tfTimeline(transforms)
-        const roots = tfRoots(timeline)
-        // The world is the root the clouds chain up to. A recording can carry a
-        // second tree (a static camera tree under base_link, say) that never
-        // joins the odometry's; picking a root by name would draw everything
-        // in that one's frame.
+        // A finished map (a stream named *map) already sits in the world frame and
+        // its last message is the whole map, so only that is read.
+        const isMap = /map/.test(options.cloud)
         const probe = await source.read(options.cloud, "PointCloud2", 1, { last: true })
         const probeFrame = probe[0]?.message.header.frame_id
-        const world = probeFrame === undefined
-            ? roots[0]
-            : chainToRoot(timeline, probeFrame, headerSeconds(probe[0].message.header) || probe[0].ts).root
-        if (roots.length !== 1) {
-            console.error(`heatmap: the tf tree has ${roots.length} roots (${roots.join(", ")}); ${options.cloud} reaches ${world}, so that is the world`)
+        // The map's own voxel, read off its points: the smallest step between
+        // distinct x coordinates.
+        const mapVoxel = isMap && probe[0] ? voxelPitch(cloudXyz(probe[0].message)) : 0.08
+
+        // A map plus an odometry stream needs no tf: /tf runs through every chunk
+        // of a recording, so reading it means unpacking the whole file, where the
+        // odometry is a few chunks post_process appended at the end.
+        const odomStream = options.odom ?? (isMap && source.kinds().get("pointlio_odometry") === "Odometry" ? "pointlio_odometry" : undefined)
+        let timeline = null
+        let world = probeFrame
+        let odom
+        // The path is only read when something uses it: drawing it, or cropping
+        // to it. A map drawn without either touches nothing but the last map chunk.
+        const needsPath = options.path || options.crop !== undefined
+        if (isMap && !needsPath) {
+            odom = []
+            console.error(`heatmap: world ${world}, no path wanted, so neither odometry nor tf is read`)
+        } else if (isMap && odomStream !== undefined) {
+            odom = await readOdometry(odomStream)
+            console.error(`heatmap: world ${world}, path from ${odomStream} (${odom.length} poses), no tf read`)
+        } else {
+            const transforms = (await source.read(options.tf, "TFMessage")).map((row) => ({ ts: row.ts, edges: tfEdges(row.message, row.ts) }))
+            if (transforms.length === 0) {
+                console.error(`heatmap: no ${options.tf} in ${recording}`)
+                Deno.exit(1)
+            }
+            timeline = tfTimeline(transforms)
+            const roots = tfRoots(timeline)
+            // The world is the root the clouds chain up to. A recording can carry a
+            // second tree (a static camera tree under base_link, say) that never
+            // joins the odometry's; picking a root by name would draw everything
+            // in that one's frame.
+            world = probeFrame === undefined
+                ? roots[0]
+                : chainToRoot(timeline, probeFrame, headerSeconds(probe[0].message.header) || probe[0].ts).root
+            if (roots.length !== 1) {
+                console.error(`heatmap: the tf tree has ${roots.length} roots (${roots.join(", ")}); ${options.cloud} reaches ${world}, so that is the world`)
+            }
+            if (odomStream !== undefined) {
+                odom = await readOdometry(odomStream)
+            } else {
+                const found = trajectory(timeline, world, options.body)
+                odom = found.poses
+                console.error(`heatmap: world ${world}, trajectory ${world} -> ${found.child} (${odom.length} poses)`)
+            }
         }
-        const { child: body, poses: odom } = trajectory(timeline, world, options.body)
-        if (odom.length === 0) {
-            console.error(`heatmap: no moving edge under ${world} in ${options.tf}, so there is no trajectory to draw`)
+        if (needsPath && odom.length === 0) {
+            console.error(`heatmap: no path under ${world}, so there is nothing to draw it from`)
             Deno.exit(1)
         }
-        console.error(`heatmap: world ${world}, trajectory ${world} -> ${body} (${odom.length} poses)`)
 
         // The two SLAM systems have unrelated world origins, so nothing can be
         // compared until one trajectory is carried onto the other's frame.
@@ -967,40 +1243,116 @@ await new Command()
             pose.q = moved.q
         }
 
-        // A finished map already sits in the world frame and its last message is
-        // the whole map, so it is drawn as it is. A per-scan stream is in the
-        // sensor's frame -- not the body's; between them sits the mount, a large
-        // rotation on a handheld rig -- so each scan is carried into the world
-        // through the tf chain from the frame its header names, at its own time.
-        const newest = probe
-        const cloudFrame = probeFrame
-        const isMap = cloudFrame !== undefined && cloudFrame === world
-        if (isMap) {
-            console.error(`heatmap: ${options.cloud} is in the world frame ${world}; drawing its last message as the map`)
+        // A per-scan stream is in whatever frame its header names -- the sensor's,
+        // usually, with the mount between it and the body -- so each scan is
+        // carried into the world through the tf chain at its own time.
+        const voxel = options.voxel ?? (isMap ? mapVoxel : 0.08)
+        if (isMap && voxel < mapVoxel - 1e-6) {
+            console.error(`heatmap: ${options.cloud} is ${mapVoxel} m voxels, so --voxel ${voxel} adds nothing; use --cloud pointlio_lidar`)
+        }
+
+        // Every render is one height band. Without --slice there is exactly one,
+        // from the positional output and --min/--max-height.
+        const slices = (options.slice ?? []).map((spec) => {
+            const [file, lowText, highText, ...title] = spec.split(":")
+            return { target: file, low: Number(lowText), high: Number(highText), title: title.join(":") || undefined }
+        })
+        if (slices.length === 0) {
+            slices.push({
+                target: output ?? recording.replace(/\.(db|mcap)$/, "") + "_heatmap.png",
+                low: options.minHeight ?? -Infinity,
+                high: options.maxHeight ?? Infinity,
+                title: options.title,
+            })
+        }
+        for (const slice of slices) {
+            if (Number.isNaN(slice.low) || Number.isNaN(slice.high)) {
+                console.error(`heatmap: a --slice is out.png:minZ:maxZ[:title]; could not read ${slice.target}`)
+                Deno.exit(1)
+            }
+            // Distinct 3-D voxels, with how often each was hit: a floor plan should
+            // show a wall once however long it was looked at, and a voxel hit
+            // only once is more likely a passer-by than a wall.
+            slice.voxels = new Map()
+        }
+
+        // Squaring turns the plan so the building's walls run along the grid, and
+        // it is applied before binning, so the voxels sit on the plan's own grid
+        // rather than as tilted squares. The angle is found once, for every
+        // slice, so all renders of a building share it and line up.
+        let squaredBy = 0
+        if (options.square === true) {
+            const mapStream = [...source.kinds()].find(([name, kind]) => kind === "PointCloud2" && /map/.test(name))?.[0]
+            const sampleRow = mapStream === undefined || mapStream === options.cloud
+                ? probe[0]
+                : (await source.read(mapStream, "PointCloud2", 1, { last: true }))[0]
+            const points = cloudXyz(sampleRow.message)
+            const sample = []
+            for (let i = 0; i < points.length; i += 3) {
+                sample.push(points[i], points[i + 1])
+            }
+            squaredBy = wallAngle(sample)
+        } else if (options.square !== undefined) {
+            squaredBy = Number(options.square) * Math.PI / 180
+        }
+        if (options.square !== undefined) {
+            console.log(`heatmap: squared by ${(squaredBy * 180 / Math.PI).toFixed(1)} degrees`)
+        }
+        const cos = Math.cos(-squaredBy), sin = Math.sin(-squaredBy)
+        const turn = (x, y) => [x * cos - y * sin, x * sin + y * cos]
+        for (const pose of odom) {
+            [pose.x, pose.y] = turn(pose.x, pose.y)
+        }
+
+        // Keys pack three voxel indices into one exact double: 18 bits each for
+        // x and y (about 10 km either way at 4 cm) and 16 for z.
+        const OFFSET = 2 ** 17
+        const zBins = new Map()
+        const bin = (worldX, worldY, z) => {
+            const [x, y] = turn(worldX, worldY)
+            const zBin = Math.floor(z * 10)
+            zBins.set(zBin, (zBins.get(zBin) ?? 0) + 1)
+            for (const slice of slices) {
+                if (z >= slice.low && z <= slice.high) {
+                    const key = ((Math.floor(x / voxel) + OFFSET) * 2 ** 18 + (Math.floor(y / voxel) + OFFSET)) * 2 ** 16 +
+                        (Math.floor(z / voxel) + 2 ** 15)
+                    slice.voxels.set(key, (slice.voxels.get(key) ?? 0) + 1)
+                }
+            }
         }
         const rootCounts = {}
-
-        const clouds = []
-        const scanCount = isMap ? 1 : source.count(options.cloud)
-        const rows = isMap ? newest : await source.read(options.cloud, "PointCloud2", options.stride)
-        for (const row of rows) {
-            let placement
-            if (isMap) {
-                placement = alignment
-            } else {
+        let scans = 0
+        const place = (row) => {
+            let placement = alignment
+            if (!isMap) {
                 // At the scan's own instant, not its arrival at the recorder.
                 const chain = chainToRoot(timeline, row.message.header.frame_id, headerSeconds(row.message.header) || row.ts)
                 rootCounts[chain.root] = (rootCounts[chain.root] ?? 0) + 1
                 placement = compose(alignment, chain.transform)
             }
             const cloud = cloudXyz(row.message)
+            // A map point is a whole voxel. Turned and re-binned at the same size,
+            // one sample per voxel would leave some bins empty in a moire of holes,
+            // so each voxel is sampled at four points across its footprint.
+            const quarter = isMap && squaredBy !== 0 ? mapVoxel / 4 : 0
+            const offsets = quarter ? [[-quarter, -quarter], [quarter, -quarter], [-quarter, quarter], [quarter, quarter]] : [[0, 0]]
             for (let i = 0; i < cloud.length; i += 3) {
                 const [wx, wy, wz] = rotate(placement.q, cloud[i], cloud[i + 1], cloud[i + 2])
-                cloud[i] = wx + placement.t[0]
-                cloud[i + 1] = wy + placement.t[1]
-                cloud[i + 2] = wz + placement.t[2]
+                for (const [dx, dy] of offsets) {
+                    bin(wx + placement.t[0] + dx, wy + placement.t[1] + dy, wz + placement.t[2])
+                }
             }
-            clouds.push(cloud)
+            scans++
+            if (!isMap && scans % 500 === 0) {
+                console.error(`heatmap: ${scans} scans binned`)
+            }
+        }
+        const scanCount = isMap ? 1 : source.count(options.cloud)
+        if (isMap) {
+            console.error(`heatmap: drawing the last ${options.cloud} message as the map`)
+            probe.forEach(place)
+        } else {
+            await source.each(options.cloud, "PointCloud2", options.stride, place)
         }
         source.close()
 
@@ -1016,226 +1368,26 @@ await new Command()
 
         // Report the z distribution, because "chop above 2 m" is unanswerable
         // without knowing where this recording's floor actually sits.
-        const heights = []
-        for (const cloud of clouds) {
-            for (let i = 2; i < cloud.length; i += 3) {
-                heights.push(cloud[i])
+        const zSorted = [...zBins.entries()].sort((a, b) => a[0] - b[0])
+        const zTotal = zSorted.reduce((n, [, count]) => n + count, 0)
+        const pct = (f) => {
+            let seen = 0
+            for (const [zBin, count] of zSorted) {
+                seen += count
+                if (seen >= zTotal * f) {
+                    return zBin / 10
+                }
             }
+            return 0
         }
-        heights.sort((a, b) => a - b)
-        const pct = (f) => heights[Math.min(heights.length - 1, Math.floor(heights.length * f))] ?? 0
         console.log(
-            `heatmap: world z  min ${pct(0).toFixed(2)}  p2 ${pct(0.02).toFixed(2)}  ` +
-                `median ${pct(0.5).toFixed(2)}  p98 ${pct(0.98).toFixed(2)}  max ${pct(1).toFixed(2)} m`,
+            `heatmap: world z  min ${pct(0).toFixed(1)}  p2 ${pct(0.02).toFixed(1)}  ` +
+                `median ${pct(0.5).toFixed(1)}  p98 ${pct(0.98).toFixed(1)}  max ${pct(1).toFixed(1)} m`,
         )
 
-        const low = options.minHeight ?? -Infinity
-        const high = options.maxHeight ?? Infinity
-        // A height band is one floor of a building, so only the part of the walk
-        // on that floor belongs on its plan; the stairs between are left out.
-        const onFloor = (pose) => pose.z >= low && pose.z <= high
-        const keep = []
-        for (const cloud of clouds) {
-            for (let i = 0; i < cloud.length; i += 3) {
-                const z = cloud[i + 2]
-                if (z >= low && z <= high) {
-                    keep.push(cloud[i], cloud[i + 1])
-                }
-            }
+        for (const slice of slices) {
+            await renderSlice(slice, { odom, voxel, squaredBy, isMap, options })
         }
-
-        // Squaring turns the whole plan about the origin so the building's walls
-        // run along the grid, the way a floor plan is drawn.
-        let squaredBy = 0
-        if (options.square !== undefined) {
-            squaredBy = options.square === true ? wallAngle(keep) : Number(options.square) * Math.PI / 180
-            const cos = Math.cos(-squaredBy), sin = Math.sin(-squaredBy)
-            const turn = (x, y) => [x * cos - y * sin, x * sin + y * cos]
-            for (let i = 0; i < keep.length; i += 2) {
-                [keep[i], keep[i + 1]] = turn(keep[i], keep[i + 1])
-            }
-            for (const pose of odom) {
-                [pose.x, pose.y] = turn(pose.x, pose.y)
-            }
-            console.log(`heatmap: squared by ${(squaredBy * 180 / Math.PI).toFixed(1)} degrees`)
-        }
-        if (options.crop !== undefined) {
-            const walked = odom.filter(onFloor)
-            const [x0, x1] = [Math.min(...walked.map((p) => p.x)) - options.crop, Math.max(...walked.map((p) => p.x)) + options.crop]
-            const [y0, y1] = [Math.min(...walked.map((p) => p.y)) - options.crop, Math.max(...walked.map((p) => p.y)) + options.crop]
-            let kept = 0
-            for (let i = 0; i < keep.length; i += 2) {
-                if (keep[i] >= x0 && keep[i] <= x1 && keep[i + 1] >= y0 && keep[i + 1] <= y1) {
-                    keep[kept++] = keep[i]
-                    keep[kept++] = keep[i + 1]
-                }
-            }
-            keep.length = kept
-        }
-
-        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity
-        const note = (x, y) => {
-            if (x < minX) { minX = x }
-            if (x > maxX) { maxX = x }
-            if (y < minY) { minY = y }
-            if (y > maxY) { maxY = y }
-        }
-        for (let i = 0; i < keep.length; i += 2) {
-            note(keep[i], keep[i + 1])
-        }
-        for (const p of odom) {
-            if (onFloor(p)) {
-                note(p.x, p.y)
-            }
-        }
-
-        const margin = 1.0
-        minX -= margin; maxX += margin; minY -= margin; maxY += margin
-        if (options.extent) {
-            [minX, minY, maxX, maxY] = options.extent.split(/[,_]/).map(Number)
-        }
-        let width = options.width ?? (isMap ? Math.min(4096, Math.round((maxX - minX) / 0.08)) : 1600)
-        // Pixels per voxel side; more than one when a cropped map would otherwise be tiny.
-        let cell = 1
-        const voxel = 0.08
-        const onVoxelGrid = isMap && options.width === undefined && squaredBy === 0
-        if (onVoxelGrid) {
-            // A map is voxels, so draw whole pixels per voxel with the grid snapped to
-            // the voxel edges; any other pitch beats against the grid as moire.
-            minX = Math.floor(minX / voxel) * voxel
-            minY = Math.floor(minY / voxel) * voxel
-            const columns = Math.min(4096, Math.round((maxX - minX) / voxel))
-            cell = Math.max(1, Math.floor(1600 / columns))
-            width = columns * cell
-            maxX = minX + columns * voxel
-            maxY = minY + Math.round((maxY - minY) / voxel) * voxel
-        }
-        console.log(`heatmap: extent ${[minX, minY, maxX, maxY].map((v) => v.toFixed(2)).join(",")}`)
-        const scale = width / (maxX - minX)
-        const height = Math.max(1, Math.round((maxY - minY) * scale))
-        // A map's points are voxel centres, half a pixel in from the snapped grid,
-        // so they are floored onto their voxel; rounding would flip on float noise
-        // and alias the grid. Scans and the path round to the nearest pixel.
-        const pixel = onVoxelGrid ? Math.floor : Math.round
-        const toPx = (x, y) => [
-            pixel((x - minX) * scale),
-            height - 1 - pixel((y - minY) * scale),
-        ]
-
-        // Accumulate hits per pixel, then map density through a log ramp: a single
-        // stray return should stay dim while a wall seen a thousand times is bright.
-        const density = new Float32Array(width * height)
-        for (let i = 0; i < keep.length; i += 2) {
-            if (onVoxelGrid) {
-                // The whole cell of the voxel, counted from its snapped corner.
-                const column = Math.floor((keep[i] - minX) / voxel)
-                const row = Math.floor((maxY - keep[i + 1]) / voxel)
-                for (let dy = 0; dy < cell; dy++) {
-                    for (let dx = 0; dx < cell; dx++) {
-                        const px = column * cell + dx
-                        const py = row * cell + dy
-                        if (px >= 0 && px < width && py >= 0 && py < height) {
-                            density[py * width + px] += 1
-                        }
-                    }
-                }
-                continue
-            }
-            const [px, py] = toPx(keep[i], keep[i + 1])
-            if (px >= 0 && px < width && py >= 0 && py < height) {
-                density[py * width + px] += 1
-            }
-        }
-        let peak = 0
-        for (const value of density) {
-            if (value > peak) {
-                peak = value
-            }
-        }
-        const ceiling = Math.max(1, peak * 0.25)
-
-        const rgb = new Uint8Array(width * height * 3)
-        for (let i = 0; i < width * height; i++) {
-            rgb[i * 3] = 12
-            rgb[i * 3 + 1] = 14
-            rgb[i * 3 + 2] = 18
-        }
-        // The metre grid goes down before the cloud, so walls are drawn over it.
-        const pixelsPerMetre = scale
-        const minor = niceStep(pixelsPerMetre, 10)
-        const major = niceStep(pixelsPerMetre, 60)
-        if (options.measurements) {
-            const map = { rgb, width, height }
-            for (const [step, colour] of [[minor, [22, 30, 44]], [major, [38, 58, 92]]]) {
-                for (let gx = Math.ceil(minX / step) * step; gx <= maxX; gx += step) {
-                    fillRect(map, toPx(gx, 0)[0], 0, 1, height, colour)
-                }
-                for (let gy = Math.ceil(minY / step) * step; gy <= maxY; gy += step) {
-                    fillRect(map, 0, toPx(0, gy)[1], width, 1, colour)
-                }
-            }
-        }
-        for (let i = 0; i < density.length; i++) {
-            if (density[i] > 0) {
-                const t = Math.min(1, Math.log1p(density[i]) / Math.log1p(ceiling))
-                const level = Math.round(30 + t * 205)
-                rgb[i * 3] = level
-                rgb[i * 3 + 1] = level
-                rgb[i * 3 + 2] = Math.round(level * 0.95 + 12)
-            }
-        }
-
-        // Path last, so it is never buried by the cloud, and drawn as joined
-        // segments: at 30 Hz the poses are far enough apart to read as dots.
-        const plot = (x, y, r, g, b, radius) => {
-            for (let dy = -radius; dy <= radius; dy++) {
-                for (let dx = -radius; dx <= radius; dx++) {
-                    const px = x + dx
-                    const py = y + dy
-                    if (px >= 0 && px < width && py >= 0 && py < height) {
-                        const at = (py * width + px) * 3
-                        rgb[at] = r
-                        rgb[at + 1] = g
-                        rgb[at + 2] = b
-                    }
-                }
-            }
-        }
-
-        let previous = toPx(odom[0].x, odom[0].y)
-        for (let i = 1; i < odom.length; i++) {
-            const current = toPx(odom[i].x, odom[i].y)
-            if (!onFloor(odom[i]) || !onFloor(odom[i - 1])) {
-                previous = current
-                continue
-            }
-            const [r, g, b] = pathColour(i / (odom.length - 1))
-            const steps = Math.max(Math.abs(current[0] - previous[0]), Math.abs(current[1] - previous[1]), 1)
-            for (let s = 0; s <= steps; s++) {
-                const x = Math.round(previous[0] + ((current[0] - previous[0]) * s) / steps)
-                const y = Math.round(previous[1] + ((current[1] - previous[1]) * s) / steps)
-                plot(x, y, r, g, b, 1)
-            }
-            previous = current
-        }
-        const first = toPx(odom[0].x, odom[0].y)
-        const last = toPx(odom[odom.length - 1].x, odom[odom.length - 1].y)
-        if (onFloor(odom[0])) {
-            plot(first[0], first[1], 255, 255, 255, 4)
-            plot(first[0], first[1], 64, 110, 255, 3)
-        }
-        if (onFloor(odom[odom.length - 1])) {
-            plot(last[0], last[1], 255, 255, 255, 4)
-            plot(last[0], last[1], 255, 70, 70, 3)
-        }
-
-        const sheet = options.measurements
-            ? measuredSheet({ rgb, width, height }, { minX, minY, maxX, maxY, toPx, minor, major, pixelsPerMetre, title: options.title, low, high, squaredBy })
-            : { rgb, width, height }
-        await Deno.writeFile(target, await encodePng(sheet.rgb, sheet.width, sheet.height))
-        const span = Math.hypot(maxX - minX - 2 * margin, maxY - minY - 2 * margin)
-        console.log(`heatmap: ${odom.length} poses, ${clouds.length} of ${scanCount} scans, ${keep.length / 2} points drawn`)
-        console.log(`heatmap: ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} m, diagonal ${span.toFixed(1)} m`)
-        console.log(`heatmap: blue = start, red = end -> ${target}`)
+        console.log(`heatmap: ${odom.length} poses, ${scans} of ${scanCount} scans`)
     })
     .parse(Deno.args)
