@@ -110,6 +110,15 @@ const CDR_DECODERS = {
         }
         return { transforms }
     },
+    Path: (bytes) => {
+        const reader = new CdrReader(bytes)
+        const header = reader.header()
+        const poses = []
+        for (let i = reader.uint32(); i > 0; i--) {
+            poses.push({ header: reader.header(), pose: { position: reader.vector3(), orientation: reader.quaternion() } })
+        }
+        return { header, poses }
+    },
     PointCloud2: (bytes) => {
         const reader = new CdrReader(bytes)
         const header = reader.header()
@@ -974,7 +983,53 @@ async function renderSlice(slice, { odom, voxel, squaredBy, isMap, options }) {
         }
     }
     // A log ramp: a column one voxel deep stays dim, a full-height wall is bright.
-    const ceiling = Math.max(1, peak * 0.5)
+    await drawPlan(slice, { minX, minY, maxX, maxY, width, height, scale, density, ceiling: Math.max(1, peak * 0.5) }, { odom, voxel, squaredBy, options, onFloor, walked })
+    console.log(`heatmap: ${target}: ${keep.length / 2} cells, ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} m`)
+}
+
+/**
+ * The frame a raw slice accumulates into, fixed before any scan is read: the
+ * walked area on that floor plus --crop, or --extent. About 2000 pixels on the
+ * longer side.
+ */
+function rawFrame(slice, odom, options) {
+    let minX, minY, maxX, maxY
+    if (options.extent) {
+        [minX, minY, maxX, maxY] = options.extent.split(/[,_]/).map(Number)
+    } else {
+        const walked = odom.filter((pose) => pose.z >= slice.low && pose.z <= slice.high)
+        const reach = options.crop + 1.0
+        minX = Math.min(...walked.map((p) => p.x)) - reach
+        maxX = Math.max(...walked.map((p) => p.x)) + reach
+        minY = Math.min(...walked.map((p) => p.y)) - reach
+        maxY = Math.max(...walked.map((p) => p.y)) + reach
+    }
+    const scale = (options.width ?? 2000) / Math.max(maxX - minX, maxY - minY)
+    const width = Math.round((maxX - minX) * scale)
+    const height = Math.round((maxY - minY) * scale)
+    return { minX, minY, maxX, maxY, width, height, scale, density: new Float32Array(width * height) }
+}
+
+/** A raw slice: every point already counted into its pixel while the scans streamed. */
+async function renderRawSlice(slice, { odom, voxel, squaredBy, options }) {
+    const frame = slice.raw
+    const onFloor = (pose) => pose.z >= slice.low && pose.z <= slice.high
+    const walked = odom.filter(onFloor)
+    // Raw counts span orders of magnitude (a wall beside the walk is hit far more
+    // than one across the room), so the ramp tops out at the 98th percentile.
+    const hits = frame.density.filter((value) => value > 0).sort()
+    const ceiling = Math.max(1, hits[Math.floor(hits.length * 0.98)] ?? 1)
+    await drawPlan(slice, { ...frame, ceiling }, { odom, voxel: 0, squaredBy, options, onFloor, walked })
+    console.log(`heatmap: ${slice.target}: ${hits.length} lit pixels, ${(frame.maxX - frame.minX).toFixed(1)} x ${(frame.maxY - frame.minY).toFixed(1)} m`)
+}
+
+/** Grid, cloud, path and the measured sheet, onto one png. */
+async function drawPlan(slice, { minX, minY, maxX, maxY, width, height, scale, density, ceiling }, { odom, voxel, squaredBy, options, onFloor, walked }) {
+    const { low, high, target } = slice
+    const toPx = (x, y) => [
+        Math.round((x - minX) * scale),
+        height - 1 - Math.round((y - minY) * scale),
+    ]
 
     const rgb = new Uint8Array(width * height * 3)
     for (let i = 0; i < width * height; i++) {
@@ -1040,7 +1095,6 @@ async function renderSlice(slice, { odom, voxel, squaredBy, isMap, options }) {
         ? measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixelsPerMetre: scale, title: slice.title, low, high, squaredBy, voxel })
         : map
     await Deno.writeFile(target, await encodePng(sheet.rgb, sheet.width, sheet.height))
-    console.log(`heatmap: ${target}: ${keep.length / 2} cells, ${(maxX - minX).toFixed(1)} x ${(maxY - minY).toFixed(1)} m`)
 }
 
 // --- measured sheet --------------------------------------------------------
@@ -1057,7 +1111,13 @@ function measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixels
     const right = labelWidth + 24
     const top = (title ? 44 : 0) + 36
     const bottom = 100
-    const sheet = { width: map.width + left + right, height: map.height + top + bottom }
+    const band = Number.isFinite(low) || Number.isFinite(high)
+        ? `   Z ${Number.isFinite(low) ? metres(low) : "-"} TO ${Number.isFinite(high) ? metres(high) : "-"} M`
+        : ""
+    const turned = squaredBy ? `   TURNED ${metres(Math.round(squaredBy * 1800 / Math.PI) / 10)} DEG` : ""
+    const caption = `${metres(maxX - minX)} X ${metres(maxY - minY)} M   GRID ${metres(minor)} M / ${metres(major)} M   ${voxel ? `VOXEL ${metres(voxel * 100)} CM` : "RAW POINTS"}${band}${turned}`
+    // The caption sets a floor on the width, so a narrow plan does not clip it.
+    const sheet = { width: Math.max(map.width + left + right, left + textWidth(caption, size) + 16), height: map.height + top + bottom }
     sheet.rgb = new Uint8Array(sheet.width * sheet.height * 3)
     fillRect(sheet, 0, 0, sheet.width, sheet.height, [8, 10, 14])
     for (let y = 0; y < map.height; y++) {
@@ -1101,11 +1161,6 @@ function measuredSheet(map, { minX, minY, maxX, maxY, toPx, minor, major, pixels
     fillRect(sheet, Math.round(left + barMetres * pixelsPerMetre), barY - 3, 1, 14, ink)
     drawText(sheet, `${barMetres} M`, Math.round(left + barMetres * pixelsPerMetre) + 10, barY - 3, size, ink)
 
-    const band = Number.isFinite(low) || Number.isFinite(high)
-        ? `   Z ${Number.isFinite(low) ? metres(low) : "-"} TO ${Number.isFinite(high) ? metres(high) : "-"} M`
-        : ""
-    const turned = squaredBy ? `   TURNED ${metres(Math.round(squaredBy * 1800 / Math.PI) / 10)} DEG` : ""
-    const caption = `${metres(maxX - minX)} X ${metres(maxY - minY)} M   GRID ${metres(minor)} M / ${metres(major)} M   VOXEL ${metres(voxel * 100)} CM${band}${turned}`
     drawText(sheet, caption, left, barY + 24, size, faint)
     if (title) {
         drawText(sheet, title, left, 12, 3, [220, 230, 245])
@@ -1140,6 +1195,7 @@ await new Command()
     )
     .option("--voxel <m:number>", "Plan resolution: points are binned into voxels this size (default 0.08, the map's own; go finer with a per-scan --cloud)")
     .option("--no-path", "Leave the walked path off the plan")
+    .option("--raw", "Count every point of a per-scan --cloud straight into pixels, no voxels; needs --crop or --extent so the frame is known before reading")
     .option("--stride <n:integer>", "Use every Nth lidar scan", { default: 1 })
     .option("--title <text:string>", "A heading drawn above the plan, e.g. the floor's name")
     .option("--square [degrees:string]", "Rotate the plan so its walls run along the grid; a number of degrees, or no value to find it from the walls")
@@ -1179,6 +1235,15 @@ await new Command()
         if (isMap && !needsPath) {
             odom = []
             console.error(`heatmap: world ${world}, no path wanted, so neither odometry nor tf is read`)
+        } else if (isMap && options.odom === undefined && source.kinds().get("pointlio_path") === "Path") {
+            // post_process writes the whole path as one message at the end of the
+            // file, so the path costs one chunk however long the recording is.
+            const [row] = await source.read("pointlio_path", "Path", 1, { last: true })
+            odom = row.message.poses.map((stamped) => ({
+                ts: headerSeconds(stamped.header),
+                ...odometryPose({ pose: { pose: stamped.pose } }),
+            }))
+            console.error(`heatmap: world ${world}, path from pointlio_path (${odom.length} poses), no tf read`)
         } else if (isMap && odomStream !== undefined) {
             odom = await readOdometry(odomStream)
             console.error(`heatmap: world ${world}, path from ${odomStream} (${odom.length} poses), no tf read`)
@@ -1304,6 +1369,20 @@ await new Command()
             [pose.x, pose.y] = turn(pose.x, pose.y)
         }
 
+        if (options.raw) {
+            if (isMap) {
+                console.error(`heatmap: --raw accumulates scans; ${options.cloud} is a finished map. Pick one with --cloud, e.g. pointlio_lidar`)
+                Deno.exit(1)
+            }
+            if (options.crop === undefined && !options.extent) {
+                console.error("heatmap: --raw needs --crop or --extent, so each slice's frame is known before the scans are read")
+                Deno.exit(1)
+            }
+            for (const slice of slices) {
+                slice.raw = rawFrame(slice, odom, options)
+            }
+        }
+
         // Keys pack three voxel indices into one exact double: 18 bits each for
         // x and y (about 10 km either way at 4 cm) and 16 for z.
         const OFFSET = 2 ** 17
@@ -1313,7 +1392,14 @@ await new Command()
             const zBin = Math.floor(z * 10)
             zBins.set(zBin, (zBins.get(zBin) ?? 0) + 1)
             for (const slice of slices) {
-                if (z >= slice.low && z <= slice.high) {
+                if (slice.raw && z >= slice.low && z <= slice.high) {
+                    const frame = slice.raw
+                    const px = Math.floor((x - frame.minX) * frame.scale)
+                    const py = Math.floor((frame.maxY - y) * frame.scale)
+                    if (px >= 0 && px < frame.width && py >= 0 && py < frame.height) {
+                        frame.density[py * frame.width + px] += 1
+                    }
+                } else if (z >= slice.low && z <= slice.high) {
                     const key = ((Math.floor(x / voxel) + OFFSET) * 2 ** 18 + (Math.floor(y / voxel) + OFFSET)) * 2 ** 16 +
                         (Math.floor(z / voxel) + 2 ** 15)
                     slice.voxels.set(key, (slice.voxels.get(key) ?? 0) + 1)
@@ -1386,7 +1472,7 @@ await new Command()
         )
 
         for (const slice of slices) {
-            await renderSlice(slice, { odom, voxel, squaredBy, isMap, options })
+            await (slice.raw ? renderRawSlice : renderSlice)(slice, { odom, voxel, squaredBy, isMap, options })
         }
         console.log(`heatmap: ${odom.length} poses, ${scans} of ${scanCount} scans`)
     })
