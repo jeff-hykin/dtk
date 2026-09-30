@@ -15,6 +15,7 @@ import list from "./list.js"
 import remove from "./remove.js"
 import update from "./update.js"
 import where from "./where.js"
+import { frontend, websdk } from "./websdk.js"
 
 export const commands = [
     run,
@@ -26,6 +27,8 @@ export const commands = [
     fk,
     log,
     net,
+    websdk,
+    frontend,
     list,
     update,
     remove,
