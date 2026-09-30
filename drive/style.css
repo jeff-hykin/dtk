@@ -1,0 +1,663 @@
+:root {
+    --bg: #000;
+    --surface: rgba(255, 255, 255, 0.055);
+    --surface-strong: rgba(255, 255, 255, 0.09);
+    --hairline: rgba(255, 255, 255, 0.11);
+    --text: #f5f5f7;
+    --muted: rgba(235, 235, 245, 0.6);
+    --faint: rgba(235, 235, 245, 0.32);
+    --accent: #0a84ff;
+    --good: #32d74b;
+    --warn: #ff9f0a;
+    --bad: #ff453a;
+    --radius: 18px;
+}
+
+* {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+}
+
+html, body {
+    height: 100%;
+    margin: 0;
+    /* Chrome for Android reads this off the root element, and a pull-to-refresh
+       mid-drive would reload the page and drop the connection to the robot. */
+    overscroll-behavior: none;
+}
+
+body {
+    display: flex;
+    flex-direction: column;
+    background: var(--bg);
+    color: var(--text);
+    font: 15px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", ui-sans-serif, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    letter-spacing: -0.01em;
+    overscroll-behavior: none;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+[hidden] {
+    display: none !important;
+}
+
+header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 18px;
+    border-bottom: 1px solid var(--hairline);
+    background: rgba(20, 20, 22, 0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 15px;
+    letter-spacing: -0.02em;
+}
+
+.dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--bad);
+    box-shadow: 0 0 0 0 transparent;
+    transition: background 0.25s, box-shadow 0.25s;
+}
+
+.dot.live {
+    background: var(--good);
+    box-shadow: 0 0 10px rgba(50, 215, 75, 0.55);
+}
+
+.pill {
+    flex: 1;
+    min-width: 0;
+    font-size: 13px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.pill.bad {
+    color: var(--bad);
+}
+
+button.ghost {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--hairline);
+    border-radius: 980px;
+    padding: 7px 15px;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s, transform 0.1s;
+}
+
+button.ghost:hover {
+    background: var(--surface-strong);
+}
+
+button.ghost:active {
+    transform: scale(0.97);
+}
+
+main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    padding: 16px;
+    gap: 14px;
+}
+
+/* Scrolls on its own so the camera picker and the drive controls never get
+   pushed off screen, however many streams are open. */
+.streams {
+    flex: 1;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(320px, 560px));
+    justify-content: center;
+    gap: 14px;
+    align-content: start;
+}
+
+.empty {
+    grid-column: 1 / -1;
+    align-self: center;
+    text-align: center;
+    color: var(--faint);
+}
+
+.tile {
+    position: relative;
+    background: #0b0b0d;
+    border: 1px solid var(--hairline);
+    border-radius: var(--radius);
+    overflow: hidden;
+    min-height: 200px;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5);
+}
+
+.tile canvas {
+    flex: 1;
+    width: 100%;
+    min-height: 0;
+    object-fit: contain;
+    background: #000;
+    display: block;
+}
+
+/* A cleared canvas is indistinguishable from a very dark scene, so the tile says
+   so in the bar as well as going black. */
+.tile.offline .tile-bar span:first-of-type {
+    color: var(--bad);
+}
+
+.tile-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    gap: 10px;
+    padding: 9px 14px;
+    font-size: 12px;
+    color: var(--faint);
+    font-variant-numeric: tabular-nums;
+    border-top: 1px solid var(--hairline);
+}
+
+/* Keeps the stats and the latency together on the right, so the stats do not slide
+   to the middle of the bar on an unstamped stream where the latency is hidden. */
+.tile-bar span:first-of-type {
+    margin-left: auto;
+}
+
+.tile-bar .warn {
+    color: var(--warn);
+}
+
+.tile-bar .bad {
+    color: var(--bad);
+}
+
+.tile-bar strong {
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 590;
+    letter-spacing: -0.01em;
+}
+
+.picker {
+    flex: 0 0 auto;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.chip {
+    flex: 0 0 auto;
+    background: var(--surface);
+    border: 1px solid transparent;
+    color: var(--muted);
+    border-radius: 980px;
+    padding: 7px 14px;
+    font: inherit;
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s, transform 0.1s;
+}
+
+.chip:active {
+    transform: scale(0.96);
+}
+
+/* Reserved width so a rate crossing a digit boundary cannot resize the chip and
+   slide every chip after it. */
+.chip .hz {
+    display: inline-block;
+    min-width: 4.5ch;
+    text-align: right;
+}
+
+.chip.on {
+    background: var(--accent);
+    color: #fff;
+}
+
+.control {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    padding: 18px 20px calc(18px + env(safe-area-inset-bottom));
+    border-top: 1px solid var(--hairline);
+    background: rgba(20, 20, 22, 0.72);
+    backdrop-filter: saturate(180%) blur(20px);
+}
+
+.control-buttons {
+    flex: 0 0 auto;
+    display: flex;
+    gap: 8px;
+}
+
+.control button.ghost {
+    flex: 0 0 auto;
+    min-height: 44px;
+    padding: 0 18px;
+}
+
+#record-open.recording {
+    border-color: rgba(255, 69, 58, 0.6);
+    background: rgba(255, 69, 58, 0.16);
+    color: var(--bad);
+}
+
+.pad {
+    position: relative;
+    flex: 0 0 auto;
+    width: 148px;
+    height: 148px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 50% 38%, rgba(255, 255, 255, 0.1), rgba(255, 255, 255, 0.03) 70%);
+    border: 1px solid var(--hairline);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07);
+    touch-action: none;
+    display: grid;
+    place-items: center;
+    transition: border-color 0.15s;
+}
+
+.pad.active {
+    border-color: rgba(10, 132, 255, 0.6);
+}
+
+.knob {
+    position: absolute;
+    width: 62px;
+    height: 62px;
+    border-radius: 50%;
+    background: linear-gradient(180deg, #4da2ff, var(--accent));
+    box-shadow: 0 6px 18px rgba(10, 132, 255, 0.45);
+    pointer-events: none;
+    transform: translate(0, 0);
+}
+
+.dpad {
+    flex: 0 0 auto;
+    display: grid;
+    grid-template-columns: repeat(3, 46px);
+    gap: 6px;
+    touch-action: none;
+}
+
+.dpad-key {
+    height: 46px;
+    padding: 0;
+    /* A hairline disappears on a phone screen held at arm's length, and a driving
+       control you cannot find is worse than one that breaks the flat look. */
+    border: 1px solid rgba(255, 255, 255, 0.3);
+    border-radius: 12px;
+    background: var(--surface-strong);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 18px;
+    line-height: 1;
+    touch-action: none;
+    cursor: pointer;
+    transition: background 0.08s, color 0.08s, border-color 0.08s;
+}
+
+.dpad-key.stop {
+    font-size: 10px;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    border-color: rgba(255, 69, 58, 0.55);
+    color: var(--bad);
+}
+
+.dpad-key.down {
+    background: var(--accent);
+    border-color: transparent;
+    color: #fff;
+}
+
+.readout {
+    display: flex;
+    gap: 30px;
+    margin: 0;
+}
+
+.readout dt {
+    font-size: 11px;
+    font-weight: 590;
+    color: var(--faint);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+}
+
+.readout dd {
+    display: flex;
+    align-items: baseline;
+    gap: 5px;
+    margin: 2px 0 0;
+    font-size: 30px;
+    font-weight: 300;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+}
+
+.readout small {
+    font-size: 12px;
+    font-weight: 400;
+    color: var(--faint);
+}
+
+.hints {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 8px;
+}
+
+.keys {
+    display: grid;
+    grid-template-columns: repeat(3, 32px);
+    gap: 5px;
+}
+
+.keys span {
+    display: grid;
+    place-items: center;
+    height: 28px;
+    border-radius: 7px;
+    background: var(--surface);
+    color: var(--faint);
+    font-size: 11px;
+    font-weight: 590;
+    transition: background 0.08s, color 0.08s;
+}
+
+.keys span.down {
+    background: var(--accent);
+    color: #fff;
+}
+
+.hint-text {
+    margin: 0;
+    font-size: 12px;
+    color: var(--faint);
+}
+
+.switch {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    font-size: 13px;
+    color: var(--muted);
+    cursor: pointer;
+}
+
+.switch input {
+    appearance: none;
+    flex: 0 0 auto;
+    width: 42px;
+    height: 25px;
+    margin: 0;
+    border-radius: 980px;
+    background: rgba(120, 120, 128, 0.32);
+    position: relative;
+    cursor: pointer;
+    transition: background 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.switch input::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 21px;
+    height: 21px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.35);
+    transition: transform 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+.switch input:checked {
+    background: var(--good);
+}
+
+.switch input:checked::after {
+    transform: translateX(17px);
+}
+
+input[type="range"] {
+    width: 100%;
+    accent-color: var(--accent);
+}
+
+.scrim {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    backdrop-filter: blur(2px);
+    z-index: 9;
+}
+
+.settings {
+    position: fixed;
+    inset: 0 0 0 auto;
+    width: min(400px, 100%);
+    background: rgba(28, 28, 30, 0.92);
+    backdrop-filter: saturate(180%) blur(28px);
+    border-left: 1px solid var(--hairline);
+    padding: 18px 18px calc(18px + env(safe-area-inset-bottom));
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    z-index: 10;
+    animation: slide-in 0.28s cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes slide-in {
+    from { transform: translateX(100%); }
+}
+
+.settings-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.settings-head h2 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 640;
+    letter-spacing: -0.02em;
+}
+
+.group {
+    display: flex;
+    flex-direction: column;
+    /* Both drawers are fixed-height flex columns, which would otherwise shrink a
+       group and clip its rows in half rather than letting the drawer scroll. */
+    flex: 0 0 auto;
+    background: var(--surface);
+    border-radius: 14px;
+    overflow: hidden;
+}
+
+.group-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 10px;
+}
+
+.group-title {
+    margin: 0;
+    padding: 11px 14px 7px;
+    font-size: 11px;
+    font-weight: 590;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--faint);
+}
+
+.row {
+    padding: 11px 14px;
+    font-size: 14px;
+    color: var(--muted);
+    border-top: 1px solid var(--hairline);
+}
+
+.row.slider {
+    display: flex;
+    flex-direction: column;
+    gap: 7px;
+}
+
+.row.switch {
+    flex-direction: row-reverse;
+    justify-content: space-between;
+}
+
+.row.text {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+}
+
+.row.text input,
+.row.text select {
+    flex: 1;
+    min-width: 0;
+    padding: 7px 10px;
+    border: 1px solid var(--hairline);
+    border-radius: 9px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 13px;
+    text-align: right;
+}
+
+.row.text select:disabled {
+    color: var(--faint);
+}
+
+.slider em {
+    float: right;
+    color: var(--text);
+    font-style: normal;
+    font-variant-numeric: tabular-nums;
+}
+
+.topics {
+    display: flex;
+    flex-direction: column;
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.topic-row {
+    display: grid;
+    /* Fixed last column: an `auto` rate column re-measured on every poll, so the
+       type text beside it twitched left and right as the digits changed. */
+    grid-template-columns: 1fr auto 6ch;
+    gap: 12px;
+    padding: 8px 14px;
+    border-top: 1px solid var(--hairline);
+}
+
+.topic-row .rate {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+
+.topic-row span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.topic-row .type {
+    color: var(--faint);
+}
+
+.topic-row .type.bad {
+    color: var(--bad);
+}
+
+.topic-row.stale {
+    opacity: 0.4;
+}
+
+@media (max-width: 700px) {
+    main {
+        padding: 12px;
+    }
+
+    /* Wrapping keeps the stick and the buttons side by side on a narrow phone;
+       the readout and settings drop to their own row rather than squeezing. */
+    .control {
+        flex-direction: row-reverse;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 14px;
+        padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+    }
+
+    .dpad {
+        grid-template-columns: repeat(3, 52px);
+    }
+
+    .dpad-key {
+        height: 52px;
+    }
+
+    .hints {
+        display: none;
+    }
+
+    .readout {
+        flex-direction: column;
+        gap: 10px;
+    }
+
+    .readout dd {
+        font-size: 26px;
+    }
+
+    .pad {
+        width: 164px;
+        height: 164px;
+    }
+
+    .streams {
+        grid-template-columns: 1fr;
+    }
+
+    .picker {
+        flex-wrap: nowrap;
+        overflow-x: auto;
+        scrollbar-width: none;
+    }
+}
+

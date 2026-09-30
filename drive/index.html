@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+    <meta name="theme-color" content="#000000">
+    <title>dtk drive</title>
+    <link rel="stylesheet" href="/style.css">
+    <link rel="icon" href="data:,">
+</head>
+<body>
+    <header>
+        <div class="brand">
+            <span id="link-dot" class="dot"></span>
+            <strong>dtk drive</strong>
+        </div>
+        <div id="publish-target" class="pill">connecting</div>
+    </header>
+
+    <main>
+        <section id="streams" class="streams">
+            <p id="streams-empty" class="empty">Looking for camera topics&hellip;</p>
+        </section>
+        <nav id="camera-picker" class="picker" aria-label="Camera topics"></nav>
+    </main>
+
+    <section class="control">
+        <div id="pad" class="pad">
+            <div id="pad-knob" class="knob"></div>
+        </div>
+
+        <div class="dpad" aria-label="Direction buttons">
+            <button class="dpad-key" data-key="q" aria-label="Strafe left">&#8676;</button>
+            <button class="dpad-key" data-key="w" aria-label="Forward">&#8593;</button>
+            <button class="dpad-key" data-key="e" aria-label="Strafe right">&#8677;</button>
+            <button class="dpad-key" data-key="a" aria-label="Turn left">&#8630;</button>
+            <button class="dpad-key stop" data-key="stop" aria-label="Stop">STOP</button>
+            <button class="dpad-key" data-key="d" aria-label="Turn right">&#8631;</button>
+            <span></span>
+            <button class="dpad-key" data-key="s" aria-label="Back">&#8595;</button>
+            <span></span>
+        </div>
+
+        <dl class="readout">
+            <div><dt>Linear</dt><dd><span id="value-linear">0.00</span><small>m/s</small></dd></div>
+            <div><dt>Angular</dt><dd><span id="value-angular">0.00</span><small>rad/s</small></dd></div>
+        </dl>
+
+        <div class="hints">
+            <p class="hint-text">W A S D drive &middot; Q E strafe &middot; Space stops</p>
+            <label class="switch">
+                <input type="checkbox" id="strafe-mode">
+                <span>Stick strafes instead of turning</span>
+            </label>
+        </div>
+
+        <div class="control-buttons">
+            <button id="settings-open" class="ghost">Settings</button>
+        </div>
+    </section>
+
+    <div id="settings-scrim" class="scrim" hidden></div>
+    <aside id="settings" class="settings" hidden aria-label="Settings">
+        <div class="settings-head">
+            <h2>Settings</h2>
+            <button id="settings-close" class="ghost">Done</button>
+        </div>
+        <div class="group">
+            <p class="group-title">Driving</p>
+            <label class="row text"><span>Command topic</span>
+                <input type="text" id="topic" spellcheck="false" autocapitalize="off" autocomplete="off"></label>
+            <label class="row slider"><span>Linear speed <em id="label-linearSpeed"></em></span>
+                <input type="range" id="linearSpeed" min="0.05" max="1.5" step="0.05"></label>
+            <label class="row slider"><span>Angular speed <em id="label-angularSpeed"></em></span>
+                <input type="range" id="angularSpeed" min="0.1" max="3" step="0.1"></label>
+            <label class="row slider"><span>Stop after silence <em id="label-deadmanMs"></em></span>
+                <input type="range" id="deadmanMs" min="100" max="2000" step="50"></label>
+            <label class="row switch"><input type="checkbox" id="invertTurn"><span>Invert turning</span></label>
+        </div>
+        <div class="group">
+            <p class="group-title">Video (H.264, applies to newly opened cameras)</p>
+            <label class="row slider"><span>Max width <em id="label-maxWidth"></em></span>
+                <input type="range" id="maxWidth" min="320" max="1920" step="160"></label>
+            <label class="row slider"><span>Frame rate <em id="label-fps"></em></span>
+                <input type="range" id="fps" min="2" max="30" step="1"></label>
+            <label class="row slider"><span>Bitrate <em id="label-bitrate"></em></span>
+                <input type="range" id="bitrate" min="200000" max="8000000" step="100000"></label>
+        </div>
+        <div class="group">
+            <p class="group-title">Live topics</p>
+            <div id="topic-table" class="topics"></div>
+        </div>
+    </aside>
+
+    <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -6,7 +6,7 @@ import { dim } from "../style.js"
 // It is built from a local checkout until it has release binaries.
 const repo = () => Deno.env.get("DTK_WEBSDK_DIR") ?? `${Deno.env.get("HOME")}/repos/dimos_websdk`
 
-async function buildServer() {
+export async function buildServer() {
     const dir = repo()
     try {
         await Deno.stat(`${dir}/Cargo.toml`)
@@ -27,7 +27,7 @@ async function buildServer() {
     return `${dir}/target/release/dimos_websdk`
 }
 
-function portOf(args) {
+export function portOf(args) {
     const at = args.findIndex((arg) => arg === "--port" || arg.startsWith("--port="))
     if (at === -1) {
         return 9669
@@ -35,7 +35,7 @@ function portOf(args) {
     return Number(args[at].includes("=") ? args[at].split("=")[1] : args[at + 1])
 }
 
-async function isUp(port) {
+export async function isUp(port) {
     try {
         const response = await fetch(`http://127.0.0.1:${port}/status`)
         await response.body?.cancel()

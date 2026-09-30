@@ -4,6 +4,7 @@
 import chat from "./chat.js"
 import constellation from "./constellation.js"
 import data from "./data.js"
+import drive from "./drive.js"
 import doctor from "./doctor.js"
 import fk from "./fk.js"
 import log from "./log.js"
@@ -29,6 +30,7 @@ export const commands = [
     net,
     websdk,
     frontend,
+    drive,
     list,
     update,
     remove,
