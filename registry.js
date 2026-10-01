@@ -203,8 +203,10 @@ export const tools = [
         kind: "python",
         description: "Replay a recording through dimos modules and write their outputs back into it",
         entry: "tools/data_add.py",
+        extraFiles: ["tools/data_add_mcap.py", "tools/mcap_edit.py", "tools/db_to_mcap.py"],
         formats: ["db", "mcap"],
         needsDimosModule: ["dimos/memory/store/sqlite.py", "dimos/memory2/store/sqlite.py"],
+        withPackages: ["mcap", "rosbags", "zstandard", "lz4"],
     },
     {
         name: "run_supervisor",
