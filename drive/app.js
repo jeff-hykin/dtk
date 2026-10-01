@@ -370,6 +370,9 @@ function startPlayer(topic, tile) {
     tile.received = 0
 }
 
+const LATENCY_GOOD_MS = 150
+const LATENCY_HIGH_MS = 300
+
 // A frozen last frame reads exactly like a live one, so a stalled feed says so.
 function renderTileStats() {
     for (const tile of state.tiles.values()) {
@@ -389,12 +392,15 @@ function renderTileStats() {
         } else if (fps === 0) {
             setText(tile.info, player.decoded ? "stalled" : "waiting for a keyframe")
         } else {
-            setText(
-                tile.info,
-                `${fps.toFixed(0)}/${
-                    receivedFps.toFixed(0)
-                } fps drawn/sent · ${tile.canvas.width}×${tile.canvas.height}`,
+            const latency = player.latencyMs ?? 0
+            const size = `${tile.canvas.width}×${tile.canvas.height}`
+            const rates = `${fps.toFixed(0)}/${receivedFps.toFixed(0)} fps drawn/sent`
+            setText(tile.info, `${rates} · ${size} · ${latency.toFixed(0)} ms`)
+            tile.info.classList.toggle(
+                "warn",
+                latency > LATENCY_GOOD_MS && latency <= LATENCY_HIGH_MS,
             )
+            tile.info.classList.toggle("bad", latency > LATENCY_HIGH_MS)
         }
     }
 }
