@@ -8,7 +8,9 @@ them as CDR, passing the already-CDR channels through untouched.
 """
 
 import argparse
+import importlib
 import importlib.util
+import re
 import sys
 import time
 from importlib.machinery import SourceFileLoader
@@ -87,6 +89,24 @@ DIMOS_TO_ROS = {
 }
 
 
+def type_from_metadata(channel):
+    """A raw-LCM channel that names its type in its metadata (`lcm_type` from the Controller's recorder, `type`
+    elsewhere: `sensor_msgs.Image`, `sensor_msgs/msg/Image`, `dimos.msgs.sensor_msgs.Image.Image`) converts with
+    db_to_mcap's converter for that class, whatever the topic is called. (None, None, None) when it can't."""
+    named = channel.metadata.get("lcm_type") or channel.metadata.get("type") or ""
+    parts = [part for part in re.split(r"[./#]", named) if part and part not in ("msg", "msgs", "dimos")]
+    package = next((part for part in parts if part.endswith("_msgs")), None)
+    if not parts or package is None or parts[-1] not in db_to_mcap.CONVERTERS:
+        return None, None, None
+    class_name = parts[-1]
+    try:
+        module = importlib.import_module(f"dimos.msgs.{package}.{class_name}")
+    except ImportError:
+        return None, None, None
+    ros_type, converter = db_to_mcap.CONVERTERS[class_name]
+    return getattr(module, class_name), ros_type, converter
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", help="web_ctrl .mcap")
@@ -149,10 +169,13 @@ def main():
                 print(f"  {name:20} passthrough  {schema.name}", flush=True)
                 continue
             dimos_type = TOPIC_TYPES.get(name)
+            if dimos_type is not None:
+                ros_type, converter = DIMOS_TO_ROS[dimos_type]
+            else:
+                dimos_type, ros_type, converter = type_from_metadata(channel)
             if dimos_type is None:
                 print(f"  {name:20} SKIPPED (no dimos type mapping)", file=sys.stderr, flush=True)
                 continue
-            ros_type, converter = DIMOS_TO_ROS[dimos_type]
             definition, _ = db_to_mcap.typestore.generate_msgdef(ros_type)
             new_schema = writer.register_schema(
                 name=ros_type, encoding="ros2msg", data=definition.encode()
@@ -162,7 +185,11 @@ def main():
             )
             def transform(payload, dimos_type=dimos_type, ros_type=ros_type, converter=converter):
                 decoded = dimos_type.lcm_decode(payload)
-                return db_to_mcap.typestore.serialize_cdr(converter(decoded, decoded.ts), ros_type)
+                # a TFMessage has no stamp of its own (its transforms do); converters only use it as a fallback
+                stamp = getattr(decoded, "ts", None)
+                if stamp is None:
+                    stamp = next((getattr(t, "ts", None) for t in getattr(decoded, "transforms", []) or []), 0.0)
+                return db_to_mcap.typestore.serialize_cdr(converter(decoded, stamp), ros_type)
 
             plans[channel_id] = (new_channel, transform)
             print(f"  {name:20} lcm -> cdr   {ros_type}", flush=True)
