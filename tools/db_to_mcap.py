@@ -323,7 +323,16 @@ def main():
             if stream_name in stored_jpeg:
                 ros_type, converter = "sensor_msgs/msg/CompressedImage", convert_stored_jpeg
             else:
-                payload_type = type(next(iter(store.streams[stream_name])).data).__name__
+                try:
+                    first = next(iter(store.streams[stream_name]), None)
+                except ImportError as error:
+                    # a payload type this dimos checkout does not have (another branch's message)
+                    skipped.append(f"{stream_name} ({error.name or error})")
+                    continue
+                if first is None:
+                    skipped.append(f"{stream_name} (empty)")
+                    continue
+                payload_type = type(first.data).__name__
                 if payload_type not in CONVERTERS:
                     skipped.append(f"{stream_name} ({payload_type})")
                     continue
