@@ -35,6 +35,15 @@ DEDUP_FLUSH_SECONDS = 15.0
 # `HH:MM:SS.mmm [lvl][logger name       ] message key=value`
 CONSOLE_LINE = re.compile(r"^\d\d:\d\d:\d\d\.\d+\s+\[(?P<level>\w+)\]\[(?P<logger>[^\]]*)\]\s?(?P<message>.*)$")
 INTERESTING_LEVELS = {"war", "err", "cri", "exc"}
+# a native module's Rust `tracing` line: `2026-10-13T02:03:49.050480Z  WARN net-0 ThreadId(03) zenoh::net::...: message`
+RUST_LINE = re.compile(
+    r"^\d{4}-\d\d-\d\dT[\d:.]+Z\s+(?P<level>TRACE|DEBUG|INFO|WARN|ERROR)\s.*?(?P<logger>[\w]+(?:::[\w]+)+):\s(?P<message>.*)$"
+)
+RUST_LEVELS = {"TRACE": "tra", "DEBUG": "deb", "INFO": "inf", "WARN": "war", "ERROR": "err"}
+# warnings that are only noise, hidden after one note
+NOISE = [
+    (re.compile(r"Unable to connect to any locator of scouted peer"), "zenoh 'Unable to connect to any locator of scouted peer' warnings"),
+]
 
 
 def say(text: str = "") -> None:
@@ -185,9 +194,10 @@ class Filter:
         self.shown: set[tuple] = set()
         self.last_flush = time.monotonic()
         self.building: set[str] = set()
+        self.hidden: set[str] = set()
 
     def feed(self, line: str) -> None:
-        match = CONSOLE_LINE.match(line)
+        match = CONSOLE_LINE.match(line) or RUST_LINE.match(line)
         if match is None:
             # Anything that is not a dimos log line -- a traceback, a build's own
             # output -- goes straight through; hiding those is how a crash
@@ -196,9 +206,16 @@ class Filter:
                 say(line)
             return
 
-        level = match.group("level").lower()
+        level = RUST_LEVELS.get(match.group("level"), match.group("level").lower())
         logger = match.group("logger").strip()
         message = match.group("message")
+
+        for pattern, note in NOISE:
+            if pattern.search(message):
+                if note not in self.hidden:
+                    self.hidden.add(note)
+                    say(f"[hidden] {note}; not shown again")
+                return
 
         if "Building native module" in message:
             module = re.search(r"module=(\S+)", message)
