@@ -12,6 +12,7 @@ import net from "./net.js"
 import genBlue from "./gen_blue.js"
 import python from "./python.js"
 import run from "./run.js"
+import runIsolated from "./run_isolated.js"
 import list from "./list.js"
 import remove from "./remove.js"
 import update from "./update.js"
@@ -20,6 +21,7 @@ import { frontend, websdk } from "./websdk.js"
 
 export const commands = [
     run,
+    runIsolated,
     chat,
     data,
     constellation,

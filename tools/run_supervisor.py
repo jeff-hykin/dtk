@@ -388,6 +388,126 @@ def watch_stats(stop: threading.Event, topics: dict) -> None:
             pass
 
 
+# ------------------------------------------------------------------ isolation
+
+ROUTER_PORT = 7447
+ROUTER_ENDPOINT = f"tcp/127.0.0.1:{ROUTER_PORT}"
+# a zenoh router only this machine can reach: no multicast scouting, loopback listener
+ROUTER_SCRIPT = f"""
+import signal, threading, zenoh
+config = zenoh.Config()
+config.insert_json5("mode", '"router"')
+config.insert_json5("listen/endpoints", '["{ROUTER_ENDPOINT}"]')
+config.insert_json5("scouting/multicast/enabled", "false")
+session = zenoh.open(config)
+stop = threading.Event()
+for each in (signal.SIGINT, signal.SIGTERM):
+    signal.signal(each, lambda *_: stop.set())
+stop.wait()
+session.close()
+"""
+# every session a client of the router: no listener of its own, nothing to scout or gossip
+ISOLATED_ENV = {
+    "ZENOH_MODE": "client",
+    "ZENOH_CONNECT": ROUTER_ENDPOINT,
+    "ZENOH_SCOUTING": "false",
+    "ZENOH_MULTICAST": "false",
+}
+LOOPBACK_PREFIXES = ("127.", "::1", "::ffff:127.")
+
+
+def is_loopback(address: str) -> bool:
+    return address.startswith(LOOPBACK_PREFIXES) or address == "localhost"
+
+
+def router_listeners(port: int) -> list[str]:
+    """The addresses something listens on at `port` (empty when nothing does)."""
+    if sys.platform == "linux":
+        found = []
+        for table, width in (("/proc/net/tcp", 8), ("/proc/net/tcp6", 32)):
+            try:
+                rows = Path(table).read_text().splitlines()[1:]
+            except OSError:
+                continue
+            for row in rows:
+                fields = row.split()
+                local, state = fields[1], fields[3]
+                address, port_hex = local.split(":")
+                if state != "0A" or int(port_hex, 16) != port:
+                    continue
+                found.append(linux_address(address, width))
+        return found
+    listing = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True)
+    return [line.split()[8].rsplit(":", 1)[0].strip("[]") for line in listing.stdout.splitlines()[1:] if len(line.split()) > 8]
+
+
+def linux_address(hex_address: str, width: int) -> str:
+    """/proc/net/tcp's little-endian hex address as text."""
+    import ipaddress
+    raw = bytes.fromhex(hex_address)
+    if width == 8:
+        return str(ipaddress.IPv4Address(raw[::-1]))
+    words = b"".join(raw[index:index + 4][::-1] for index in range(0, 16, 4))
+    return str(ipaddress.IPv6Address(words))
+
+
+def start_isolation(env: dict) -> subprocess.Popen | None:
+    """Point the run at a loopback-only router, starting one if none is up; refuse a router the network can reach."""
+    listeners = router_listeners(ROUTER_PORT)
+    exposed = [each for each in listeners if not is_loopback(each)]
+    if exposed:
+        banner(f"isolated: port {ROUTER_PORT} is open to the network ({', '.join(exposed)})")
+        say("stop that router or bind it to 127.0.0.1, or other machines can still reach this run")
+        sys.exit(1)
+    env.update(ISOLATED_ENV)
+    if listeners:
+        say(f"isolated: using the loopback router already on {ROUTER_ENDPOINT}")
+        return None
+    say(f"isolated: starting a loopback-only zenoh router on {ROUTER_ENDPOINT}")
+    router = subprocess.Popen([sys.executable, "-c", ROUTER_SCRIPT], start_new_session=True)
+    for _ in range(100):
+        if router_listeners(ROUTER_PORT) or router.poll() is not None:
+            break
+        time.sleep(0.1)
+    if router.poll() is not None:
+        banner(f"isolated: the router exited {router.returncode} before listening")
+        sys.exit(1)
+    return router
+
+
+def watch_isolation(stop: threading.Event, root_pid: int) -> None:
+    """Once the run is up, warn about any of its sockets that face the network."""
+    try:
+        import psutil
+    except ImportError:
+        say("isolated: psutil is missing, so the run's sockets are not checked")
+        return
+    if stop.wait(TF_GRACE_SECONDS):
+        return
+    try:
+        processes = [psutil.Process(root_pid), *psutil.Process(root_pid).children(recursive=True)]
+    except psutil.Error:
+        return
+    leaks = []
+    for process in processes:
+        try:
+            connections = process.net_connections(kind="inet")
+            name = process.name()
+        except psutil.Error:
+            continue
+        for connection in connections:
+            if connection.laddr and connection.status == psutil.CONN_LISTEN and not is_loopback(connection.laddr.ip):
+                leaks.append(f"{name} listens on {connection.laddr.ip}:{connection.laddr.port}")
+            elif connection.raddr and not is_loopback(connection.raddr.ip):
+                leaks.append(f"{name} is connected to {connection.raddr.ip}:{connection.raddr.port}")
+    if leaks:
+        banner(f"isolated: {len(leaks)} socket(s) face the network")
+        for leak in sorted(set(leaks)):
+            say(f"  {leak}")
+    else:
+        say("isolated: no socket of the run faces the network")
+
+
 # ------------------------------------------------------------------ the run
 
 
@@ -401,6 +521,8 @@ def main() -> None:
     parser.add_argument("--no-dtop", action="store_true", help="do not turn dtop on")
     parser.add_argument("--no-build", action="store_true",
                         help="do not force a native rebuild; a stale binary may be used")
+    parser.add_argument("--isolated", action="store_true",
+                        help="keep zenoh on this machine: client sessions through a loopback-only router")
     arguments = parser.parse_args()
 
     if not arguments.args:
@@ -426,6 +548,8 @@ def main() -> None:
     if not arguments.no_build:
         command.append("--build-native")
     command += ["run", *arguments.args]
+    env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+    router = start_isolation(env) if arguments.isolated else None
     say(f"$ {' '.join(command)}")
 
     started_at = time.time()
@@ -435,7 +559,7 @@ def main() -> None:
         stderr=subprocess.STDOUT,
         text=True,
         bufsize=1,
-        env={**os.environ, "PYTHONUNBUFFERED": "1"},
+        env=env,
     )
 
     stop = threading.Event()
@@ -447,6 +571,8 @@ def main() -> None:
     threading.Thread(target=find_log, daemon=True).start()
     threading.Thread(target=watch_tf, args=(stop,), daemon=True).start()
     threading.Thread(target=watch_stats, args=(stop, topic_types), daemon=True).start()
+    if arguments.isolated:
+        threading.Thread(target=watch_isolation, args=(stop, child.pid), daemon=True).start()
 
     def forward(signal_number, _frame):
         child.send_signal(signal_number)
@@ -465,6 +591,9 @@ def main() -> None:
     finally:
         stop.set()
         code = child.wait()
+        if router is not None:
+            router.terminate()
+            router.wait()
 
     if code != 0:
         banner(f"the run exited {code}")

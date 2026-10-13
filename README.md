@@ -139,6 +139,7 @@ dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]
 ```sh
 dtk run <blueprint> [config tokens]     # dimos run, filtered and watched
 dtk run --check-only <blueprint>        # just the blueprint check
+dtk run-isolated <blueprint>            # dtk run, with zenoh kept on this machine
 dtk constellation                       # watch live LCM/zenoh traffic in the browser
 dtk log                                 # print the jsonl log's path, and open it
 dtk fk                                  # kill everything a run leaves behind
@@ -148,6 +149,11 @@ dtk fk                                  # kill everything a run leaves behind
 a dangling output that looks like a typo of a dangling input — then turns dtop and a native rebuild
 on, prints the absolute path of the run's jsonl log, and shows only warnings and worse, de-duplicated
 so one module in a loop cannot bury the rest.
+
+`dtk run-isolated` is `dtk run` for a robot on a shared network. Every zenoh session becomes a client of a
+router on `tcp/127.0.0.1:7447` (started for the run if none is up), so no module listens on the network or
+hands its address to other machines' peers. It refuses to start when something on 7447 is open to the network,
+and 30 s in it lists any of the run's sockets that still face the network.
 
 ### Python
 
