@@ -186,6 +186,16 @@ async function loadWebRtc() {
     }
 }
 
+// node-datachannel calls these from native code, where an escaping exception (a send on a
+// channel that just closed) aborts the whole process instead of being an error
+const guarded = (fn) => (...args) => {
+    try {
+        return fn(...args)
+    } catch {
+        // the channel or connection is already gone
+    }
+}
+
 // Paces the bulk channel, never letting its own send queue grow past maxQueuedBytes.
 function bulkRun(channel, payload, send) {
     const { bitsPerSecond, seconds } = unjson(payload)
@@ -212,30 +222,33 @@ async function answerWebRtc(offer) {
     }
     const pc = new rtc.RTCPeerConnection({ iceServers: [] })
     rtcPeers.add(pc)
-    pc.onconnectionstatechange = () => {
+    pc.onconnectionstatechange = guarded(() => {
         if (["closed", "failed", "disconnected"].includes(pc.connectionState)) {
             rtcPeers.delete(pc)
             pc.close()
         }
-    }
-    pc.ondatachannel = ({ channel }) => {
+    })
+    pc.ondatachannel = guarded(({ channel }) => {
         channel.binaryType = "arraybuffer"
-        channel.onmessage = (event) => {
+        const send = guarded((data) => channel.send(data))
+        channel.onmessage = guarded((event) => {
             const bytes = new Uint8Array(event.data)
             if (channel.label === "echo") {
-                channel.send(bytes)
+                send(bytes)
             } else if (bytes[0] === START) {
-                bulkRun(channel, bytes.subarray(1), (data) => channel.send(data))
+                bulkRun(channel, bytes.subarray(1), send)
             }
-        }
-    }
+        })
+    })
     await pc.setRemoteDescription(offer)
     await pc.setLocalDescription(await pc.createAnswer())
     await new Promise((resolve) => {
         if (pc.iceGatheringState === "complete") {
             return resolve()
         }
-        pc.onicegatheringstatechange = () => pc.iceGatheringState === "complete" && resolve()
+        pc.onicegatheringstatechange = guarded(() =>
+            pc.iceGatheringState === "complete" && resolve()
+        )
         setTimeout(resolve, 3000)
     })
     return { type: "answer", sdp: pc.localDescription.sdp }
