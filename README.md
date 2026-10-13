@@ -108,6 +108,45 @@ returns nothing at all there, so the retry counters come from `/proc/net/wireles
 `journalctl -f` block-buffers into a pipe, delivering one chunk and then silence, so events are
 polled with `--cursor-file` rather than followed.
 
+### Benchmarking a link
+
+`dtk bench <ssh-host>` measures what the link to a robot can carry and how much delay it adds,
+both at once: every test offers traffic at several rates (idle, 1, 5, 10, 25 Mbit/s and as fast
+as it goes) while 20 Hz pings measure the round trip **inside** the load (same connection) and
+**beside** it (a separate one). Both machines need dtk; the far one is started over ssh.
+
+```sh
+dtk bench r1-pro-0219                              # an ssh config entry, or user@host
+dtk bench nvidia@r1 --ssh-args "-F /dev/null"      # extra ssh options
+dtk bench robot --stages tcp,udp --seconds 5       # only the raw link
+dtk bench robot --json-note "after moving the AP"  # kept with the run and shown in its report
+dtk bench history                                  # saved runs
+dtk bench open latest                              # serve a saved report again
+```
+
+| Stage | What it measures |
+| --- | --- |
+| `loopback` | each machine to itself over TCP and UDP: what the machine can do with no network |
+| `tcp`, `udp` | machine to machine, the far side sending; UDP also counts lost datagrams |
+| `http`, `ws` | a headless Chromium here downloading from the far side, and over a WebSocket |
+| `webrtc` | a data channel to node-datachannel (libdatachannel) on the far side, pings on a second channel |
+| `webtransport` | a QUIC stream to Deno's QUIC server, pings as datagrams on the same connection |
+| `zenoh` | through the zenoh gateway (dimos Desktop's by default, as `--gateway-app dim-controller`): the far side publishes a test key, the page subscribes; latency is the gateway client's heartbeat round trip |
+
+It ends with an HTML report served on localhost: plain-language takeaways first (with the
+thresholds behind each good/so-so/bad), then speed and delay against load, per-second series,
+CPU on both machines, and each end's link (route interface; for Wi-Fi the SSID, band, channel,
+width, signal and bitrates; for Ethernet the speed; Tailscale direct or relayed). Every run is
+saved under `~/.cache/dtk/bench/` (`$DTK_CACHE`) as `result.json` + `report.html`; `--no-serve`
+just saves.
+
+The browser page is visible and unthrottled (a background tab clamps timers to 1 Hz and every
+latency is then wrong), and is served from localhost here because WebTransport needs a secure
+context. Paced senders never queue more than 256 KB in their own transport, so latency under
+load is the network's and the kernel's, not a runaway application buffer. A UDP or zenoh "max"
+is skipped: an unpaced flood only measures the drops it causes. Everything the far side starts
+stops when the ssh session closes (or after `--max-seconds`).
+
 ### Working on a recording
 
 `dtk data <verb>` is one namespace for everything that operates on a recording, and every verb

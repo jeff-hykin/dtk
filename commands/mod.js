@@ -1,6 +1,7 @@
 // The built-in commands of dtk itself. Sub-tools are listed in ../registry.js
 // instead, and are dispatched before cliffy ever sees the arguments.
 
+import bench from "./bench.js"
 import chat from "./chat.js"
 import constellation from "./constellation.js"
 import data from "./data.js"
@@ -30,6 +31,7 @@ export const commands = [
     fk,
     log,
     net,
+    bench,
     websdk,
     frontend,
     drive,
