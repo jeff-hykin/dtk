@@ -15,6 +15,7 @@ topic rates and per-module resource use are printed once a minute.
 from __future__ import annotations
 
 import argparse
+import atexit
 import os
 import re
 import signal
@@ -451,7 +452,7 @@ def linux_address(hex_address: str, width: int) -> str:
     return str(ipaddress.IPv6Address(words))
 
 
-def start_isolation(env: dict) -> subprocess.Popen | None:
+def start_isolation(env) -> subprocess.Popen | None:
     """Point the run at a loopback-only router, starting one if none is up; refuse a router the network can reach."""
     listeners = router_listeners(ROUTER_PORT)
     exposed = [each for each in listeners if not is_loopback(each)]
@@ -465,6 +466,7 @@ def start_isolation(env: dict) -> subprocess.Popen | None:
         return None
     say(f"isolated: starting a loopback-only zenoh router on {ROUTER_ENDPOINT}")
     router = subprocess.Popen([sys.executable, "-c", ROUTER_SCRIPT], start_new_session=True)
+    atexit.register(router.terminate)
     for _ in range(100):
         if router_listeners(ROUTER_PORT) or router.poll() is not None:
             break
@@ -528,6 +530,9 @@ def main() -> None:
     if not arguments.args:
         parser.error("need a blueprint")
 
+    # before anything imports dimos, so this process's own sessions (the tf and stats watchers) are clients too
+    router = start_isolation(os.environ) if arguments.isolated and not arguments.check_only else None
+
     say("checking the blueprint")
     try:
         blueprint = load_blueprint(arguments.args)
@@ -549,7 +554,6 @@ def main() -> None:
         command.append("--build-native")
     command += ["run", *arguments.args]
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
-    router = start_isolation(env) if arguments.isolated else None
     say(f"$ {' '.join(command)}")
 
     started_at = time.time()
