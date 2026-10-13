@@ -72,6 +72,7 @@ function progress(scope, stage, result) {
     )
 }
 
+// A saturated link delays ssh's keepalives too, so they get a minute before ssh gives up.
 function sshCommand(host, sshArgs, script) {
     return new Deno.Command("ssh", {
         args: [
@@ -267,6 +268,18 @@ async function runBench(options, host) {
             ]),
         ).spawn()
         const remoteErr = new Response(remote.stderr).text()
+        // the far side ending early (a crash, a dropped ssh) must say so, not look like a slow link
+        let farDied = null
+        remote.status.then(async (exit) => {
+            if (cleaned) {
+                return
+            }
+            const tail = (await remoteErr).trim().split("\n").slice(-6).join("\n")
+            farDied = `the far side exited early (code ${exit.code}${
+                exit.signal ? `, ${exit.signal}` : ""
+            })${tail ? `: ${tail}` : ""}`
+            console.log(red(`  ${farDied}`))
+        })
         let status = null
         let firstLines = ""
         for await (const line of lines(remote.stdout)) {
@@ -368,6 +381,10 @@ async function runBench(options, host) {
                     }
                     : {}
                 for (const bitsPerSecond of rates) {
+                    if (farDied) {
+                        report.skipped.push({ scope: "link", stage, offered: "all", why: farDied })
+                        break
+                    }
                     if (stage === "zenoh" && bitsPerSecond === Infinity) {
                         report.skipped.push({
                             scope: "link",
@@ -420,6 +437,7 @@ async function runBench(options, host) {
             // the far side's CPU record is a nice-to-have
         }
         await localLink
+        report.remote.died = farDied
         return report
     } finally {
         report.local.cpu = localCpu.samples

@@ -121,18 +121,36 @@ export function takeaways(report) {
     const out = []
     const say = (verdict, text) => out.push({ verdict, text })
     const tcp = runsOf(report, "tcp")
-    const tcpMax = maxOf(tcp)
+    const tcpTop = maxOf(tcp)
+    // the link's capacity is the best any transport managed: Wi-Fi changes minute to minute, so
+    // the TCP stage alone can catch a bad moment
+    const linkTop = maxOf(
+        report.runs.filter((run) => run.scope === "link" && run.stage !== "zenoh"),
+    )
+    const tcpMax = linkTop
     const tcpIdle = idleOf(tcp)
     const here = report.local?.link?.hostname ?? "this machine"
     const there = report.host
 
-    if (tcpMax) {
+    if (linkTop) {
         say(
-            throughputVerdict(tcpMax.mbps),
-            `The network between ${here} and ${there} carries about ${
-                mbit(tcpMax.mbps)
-            } when pushed as hard as it goes (one TCP connection).`,
+            throughputVerdict(linkTop.mbps),
+            `The network between ${here} and ${there} carries up to about ${
+                mbit(linkTop.mbps)
+            } when pushed as hard as it goes (best of every transport tried; ${
+                linkTop.stage === "tcp" ? "a plain TCP connection" : names[linkTop.stage]
+            }).`,
         )
+        if (tcpTop && tcpTop.mbps < 0.6 * linkTop.mbps) {
+            say(
+                "borderline",
+                `The link's speed moved a lot during the test: plain TCP got only ${
+                    mbit(tcpTop.mbps)
+                } at one point and ${names[linkTop.stage]} ${
+                    mbit(linkTop.mbps)
+                } at another. Wi-Fi conditions change minute to minute; compare runs, or use a longer --seconds.`,
+            )
+        }
     }
     if (tcpIdle) {
         say(
@@ -253,12 +271,12 @@ export function takeaways(report) {
         if (!top || !tcpMax) {
             continue
         }
-        const share = (100 * top.mbps) / tcpMax.mbps
+        const share = Math.min(100, (100 * top.mbps) / tcpMax.mbps)
         const loaded = runs.find((run) => run === top)
         const latency = loaded.inband.p95 ?? loaded.side.p95
         let text = `In the browser, ${names[stage]} got ${mbit(top.mbps)}, ${
             Math.round(share)
-        }% of what the network carries, with ${ms(latency)} delay (1 in 20) at that load.`
+        }% of the best the network did, with ${ms(latency)} delay (1 in 20) at that load.`
         if (stage === "zenoh") {
             const offered = runs.filter((run) =>
                 typeof run.offeredBps === "number" && run.offeredBps > 0
