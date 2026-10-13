@@ -163,6 +163,10 @@ export function summarize(
         inband: stats(inband, pingsSent),
         side: stats(side, sideSent),
         dataLoss: dataLoss === null ? null : round(dataLoss),
-        note,
+        // a probe that never came back is a failure to report, not a missing number
+        note: note ??
+            (pingsSent > 0 && inband.length === 0
+                ? "the in-band probe got no replies at all"
+                : null),
     }
 }

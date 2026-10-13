@@ -33,6 +33,7 @@ const names = {
     http: "HTTP download",
     ws: "WebSocket",
     webrtc: "WebRTC data channel",
+    "webrtc-js": "WebRTC data channel served by werift (pure JS)",
     webtransport: "WebTransport",
     zenoh: "the zenoh gateway (what dim-controller uses)",
 }
@@ -265,7 +266,7 @@ export function takeaways(report) {
 
     // each browser transport against the raw link
     const best = []
-    for (const stage of ["http", "ws", "webrtc", "webtransport", "zenoh"]) {
+    for (const stage of ["http", "ws", "webrtc", "webrtc-js", "webtransport", "zenoh"]) {
         const runs = runsOf(report, stage)
         const top = maxOf(runs)
         // only an idle run says nothing about speed
@@ -278,6 +279,9 @@ export function takeaways(report) {
         let text = `In the browser, ${names[stage]} got ${mbit(top.mbps)}, ${
             Math.round(share)
         }% of the best the network did, with ${ms(latency)} delay (1 in 20) at that load.`
+        if (stage.startsWith("webrtc") && report.transports?.[stage]?.how) {
+            text += ` The far side's WebRTC stack was ${report.transports[stage].how}.`
+        }
         if (stage === "zenoh") {
             const offered = runs.filter((run) =>
                 typeof run.offeredBps === "number" && run.offeredBps > 0
@@ -320,6 +324,46 @@ export function takeaways(report) {
             say(
                 "info",
                 `The slowest way into the browser was ${names[worst.stage]} (${mbit(worst.mbps)}).`,
+            )
+        }
+    }
+    // the queue-depth sweep: the smallest sender queue that still gets most of the speed
+    for (const stage of ["webrtc", "ws"]) {
+        const sweep = report.runs.filter((run) => run.scope === "queue" && run.stage === stage)
+            .sort((a, b) => a.queueBytes - b.queueBytes)
+        if (sweep.length < 2) {
+            continue
+        }
+        const fastest = maxOf(sweep)
+        const enough = sweep.find((run) => run.mbps >= 0.9 * fastest.mbps)
+        const biggest = sweep.at(-1)
+        const kb = (
+            bytes,
+        ) => (bytes >= 1024 * 1024 ? `${bytes / 1024 / 1024} MB` : `${bytes / 1024} KB`)
+        say(
+            latencyVerdict(enough.inband.p95),
+            `${names[stage]}: a ${kb(enough.queueBytes)} send queue already reaches ${
+                Math.round((100 * enough.mbps) / fastest.mbps)
+            }% of its best speed (${mbit(enough.mbps)}) with ${
+                ms(enough.inband.p50)
+            } delay on the same connection (1 in 20: ${ms(enough.inband.p95)}); a ${
+                kb(biggest.queueBytes)
+            } queue gets ${mbit(biggest.mbps)} with ${ms(biggest.inband.p50)} (1 in 20: ${
+                ms(biggest.inband.p95)
+            }). A bigger queue buys little speed and costs delay.`,
+        )
+        const starved = sweep.filter((run) => run.inband.n === 0 || (run.inband.loss ?? 0) > 30)
+        if (starved.length) {
+            say(
+                "bad",
+                `${
+                    names[stage]
+                }: the same-connection echo mostly went unanswered under full load (${
+                    starved.map((run) => `${kb(run.queueBytes)}: ${run.inband.loss ?? 100}% lost`)
+                        .join(", ")
+                }), so those delays are the few echoes that got through. Over a separate connection at the same time the delay was ${
+                    starved.map((run) => ms(run.side.p50)).join(" / ")
+                } (p50). Something on the same association (the far side's stream scheduling, or the browser's) is starving small messages behind bulk data.`,
             )
         }
     }
@@ -474,6 +518,10 @@ select { font: inherit; background: var(--panel); color: var(--text); border: 1p
     <div class="card"><h3>Delay (p95 round trip) vs offered</h3><div class="chart"><canvas id="latency"></canvas></div></div>
 </div>
 
+<h2>Send queue depth: speed against delay</h2>
+<p class="meta">As fast as it goes, with the sender allowed to queue at most this much before waiting. Solid: Mbit/s (left). Dashed: delay on the same connection, p50 and p95, and on a separate connection, p95 (right, log scale).</p>
+<div class="card"><div class="chart" style="height:320px"><canvas id="queue"></canvas></div></div>
+
 <h2>Second by second</h2>
 <div class="card">
     <label>Transport <select id="series-pick"></select></label>
@@ -515,7 +563,7 @@ for (const [name, rule] of Object.entries(report.thresholds)) {
     document.getElementById("thresholds").append(el("li", {}, name + ": " + rule.what))
 }
 
-const labels = { tcp: "TCP", udp: "UDP", http: "HTTP", ws: "WebSocket", webrtc: "WebRTC", webtransport: "WebTransport", zenoh: "zenoh gateway" }
+const labels = { tcp: "TCP", udp: "UDP", http: "HTTP", ws: "WebSocket", webrtc: "WebRTC", "webrtc-js": "WebRTC (werift)", webtransport: "WebTransport", zenoh: "zenoh gateway" }
 const linkRuns = report.runs.filter((run) => run.scope === "link")
 const stages = [...new Set(linkRuns.map((run) => run.stage))]
 const offered = [...new Set(report.runs.filter((run) => run.scope === "link").map((run) => run.offered))]
@@ -544,6 +592,39 @@ new Chart(document.getElementById("latency"), {
     },
     options: { maintainAspectRatio: false, scales: { y: { type: "logarithmic", title: axisTitle("ms (log scale)") }, x: { title: axisTitle("offered") } } },
 })
+
+// the queue-depth sweep
+const queueRuns = report.runs.filter((run) => run.scope === "queue")
+const queueSizes = [...new Set(queueRuns.map((run) => run.queueBytes))].sort((a, b) => a - b)
+const queueStages = [...new Set(queueRuns.map((run) => run.stage))]
+const queueAt = (stage, get) => queueSizes.map((size) => {
+    const run = queueRuns.find((r) => r.stage === stage && r.queueBytes === size)
+    return run ? get(run) : null
+})
+if (queueRuns.length) {
+    new Chart(document.getElementById("queue"), {
+        type: "line",
+        data: {
+            labels: queueSizes.map((size) => (size >= 1048576 ? size / 1048576 + " MB" : size / 1024 + " KB")),
+            datasets: queueStages.flatMap((stage, i) => [
+                { label: labels[stage] + " Mbit/s", data: queueAt(stage, (r) => r.mbps), yAxisID: "y", borderColor: palette[i], backgroundColor: palette[i], borderWidth: 3 },
+                { label: labels[stage] + " same-conn p50", data: queueAt(stage, (r) => r.inband.p50), yAxisID: "ms", borderColor: palette[i], backgroundColor: palette[i], borderDash: [2, 3] },
+                { label: labels[stage] + " same-conn p95", data: queueAt(stage, (r) => r.inband.p95), yAxisID: "ms", borderColor: palette[i], backgroundColor: palette[i], borderDash: [8, 4] },
+                { label: labels[stage] + " separate p95", data: queueAt(stage, (r) => r.side.p95), yAxisID: "ms", borderColor: palette[i + 3], backgroundColor: palette[i + 3], borderDash: [8, 4] },
+            ]),
+        },
+        options: {
+            maintainAspectRatio: false,
+            scales: {
+                x: { title: axisTitle("sender queue cap") },
+                y: { position: "left", beginAtZero: true, title: axisTitle("Mbit/s") },
+                ms: { position: "right", type: "logarithmic", title: axisTitle("delay ms (log)"), grid: { drawOnChartArea: false } },
+            },
+        },
+    })
+} else {
+    document.getElementById("queue").parentNode.replaceWith(el("p", { className: "meta" }, "No queue sweep in this run (stage: queue)."))
+}
 
 // per-second: every rate of one transport back to back
 const seriesPick = document.getElementById("series-pick")
@@ -618,6 +699,9 @@ function linkCard(title, side) {
         }
         if (iface.driverSignal) { const pre = el("pre", {}, iface.driverSignal); dl.append(el("dt", {}, "  driver signal"), Object.assign(el("dd"), { }).appendChild(pre).parentNode) }
     }
+    for (const [name, transport] of Object.entries(side?.servers ?? {})) {
+        add("serves " + name, transport.ok ? (transport.how ?? "ok") : "unavailable: " + transport.why)
+    }
     if (link.tailscale) add("tailscale", link.tailscale.direct ? "direct, " + link.tailscale.via : link.tailscale.via)
     for (const key of ["route", "underlay"]) {
         if (side?.linkAfter?.[key]?.txRetries != null && link[key]?.txRetries != null) {
@@ -627,7 +711,7 @@ function linkCard(title, side) {
     card.append(dl)
     return card
 }
-document.getElementById("links").append(linkCard("Here: " + (report.local?.link?.hostname ?? ""), report.local), linkCard("Far: " + report.host, report.remote))
+document.getElementById("links").append(linkCard("Here: " + (report.local?.link?.hostname ?? ""), report.local), linkCard("Far: " + report.host, { ...report.remote, servers: report.transports }))
 
 // every run, as a table
 const table = document.getElementById("runs")
@@ -637,7 +721,7 @@ table.append(head)
 const fmt = (v, unit = "") => (v === null || v === undefined ? "-" : v + unit)
 for (const run of report.runs) {
     const tr = el("tr")
-    for (const v of [run.scope.replace("loopback-", "loopback "), labels[run.stage], run.offered, fmt(run.mbps), fmt(run.inband.p50), fmt(run.inband.p95), fmt(run.inband.max), fmt(run.side.p50), fmt(run.side.p95), fmt(run.inband.loss, "%"), fmt(run.dataLoss, "%"), run.note ?? ""]) tr.append(el("td", {}, String(v)))
+    for (const v of [run.scope.replace("loopback-", "loopback "), labels[run.stage], run.queueBytes ? run.offered + ", " + run.queueBytes / 1024 + " KB queue" : run.offered, fmt(run.mbps), fmt(run.inband.p50), fmt(run.inband.p95), fmt(run.inband.max), fmt(run.side.p50), fmt(run.side.p95), fmt(run.inband.loss, "%"), fmt(run.dataLoss, "%"), run.note ?? ""]) tr.append(el("td", {}, String(v)))
     table.append(tr)
 }
 for (const skip of report.skipped ?? []) {

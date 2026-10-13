@@ -24,8 +24,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 // the far machine; this page itself is served from localhost here, a secure context
 const remote = window.benchRemote ?? location.origin
 const wsBase = remote.replace(/^http/, "ws")
-const startMessage = (bitsPerSecond, seconds) =>
-    json({ bitsPerSecond: bitsPerSecond === Infinity ? null : bitsPerSecond, seconds })
+// queueBytes: the sender's high-water mark for its own send queue (the queue-depth sweep)
+const startMessage = (bitsPerSecond, seconds, queueBytes = null) =>
+    json({ bitsPerSecond: bitsPerSecond === Infinity ? null : bitsPerSecond, seconds, queueBytes })
 
 function pinger(send) {
     const rtts = []
@@ -128,7 +129,7 @@ const openers = {
         }
     },
 
-    async ws(bitsPerSecond, seconds) {
+    async ws(bitsPerSecond, seconds, { queueBytes } = {}) {
         const socket = await openSocket("/ws")
         let bytes = 0
         let finished = null
@@ -143,66 +144,16 @@ const openers = {
                 finished = unjson(data.subarray(1))
             }
         }
-        socket.send(message(START, startMessage(bitsPerSecond, seconds)))
+        socket.send(message(START, startMessage(bitsPerSecond, seconds, queueBytes)))
         return { ping, count: () => bytes, done: () => finished, close: () => socket.close() }
     },
 
-    async webrtc(bitsPerSecond, seconds) {
-        const pc = new RTCPeerConnection()
-        const bulk = pc.createDataChannel("bulk", { ordered: true })
-        const echo = pc.createDataChannel("echo", { ordered: false, maxRetransmits: 0 })
-        bulk.binaryType = "arraybuffer"
-        echo.binaryType = "arraybuffer"
-        await pc.setLocalDescription(await pc.createOffer())
-        await new Promise((resolve) => {
-            if (pc.iceGatheringState === "complete") {
-                return resolve()
-            }
-            pc.addEventListener(
-                "icegatheringstatechange",
-                () => pc.iceGatheringState === "complete" && resolve(),
-            )
-            setTimeout(resolve, 3000)
-        })
-        const answer = await (await fetch(`${remote}/rtc/offer`, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(pc.localDescription),
-        })).json()
-        if (answer.error) {
-            pc.close()
-            throw new Error(answer.error)
-        }
-        await pc.setRemoteDescription(answer)
-        const opened = (channel) =>
-            new Promise((resolve, reject) => {
-                if (channel.readyState === "open") {
-                    return resolve()
-                }
-                channel.onopen = resolve
-                setTimeout(() =>
-                    reject(
-                        new Error(
-                            `data channel ${channel.label} never opened (ICE ${pc.iceConnectionState})`,
-                        ),
-                    ), 10000)
-            })
-        await Promise.all([opened(bulk), opened(echo)])
-        let bytes = 0
-        let finished = null
-        // in-band = the echo channel on the same SCTP association, not behind the bulk channel's queue
-        const ping = pinger((payload) => echo.send(payload))
-        echo.onmessage = (event) => ping.answer(new Uint8Array(event.data))
-        bulk.onmessage = (event) => {
-            const data = new Uint8Array(event.data)
-            if (data[0] === DATA) {
-                bytes += data.byteLength - 1
-            } else if (data[0] === DONE) {
-                finished = unjson(data.subarray(1))
-            }
-        }
-        bulk.send(message(START, startMessage(bitsPerSecond, seconds)))
-        return { ping, count: () => bytes, done: () => finished, close: () => pc.close() }
+    webrtc(bitsPerSecond, seconds, { queueBytes } = {}) {
+        return webrtcRun(bitsPerSecond, seconds, "native", queueBytes)
+    },
+
+    "webrtc-js"(bitsPerSecond, seconds) {
+        return webrtcRun(bitsPerSecond, seconds, "werift")
     },
 
     async webtransport(bitsPerSecond, seconds, { port, certHash }) {
@@ -303,6 +254,64 @@ const openers = {
             },
         }
     },
+}
+
+async function webrtcRun(bitsPerSecond, seconds, stack, queueBytes = null) {
+    const pc = new RTCPeerConnection()
+    const bulk = pc.createDataChannel("bulk", { ordered: true })
+    const echo = pc.createDataChannel("echo", { ordered: false, maxRetransmits: 0 })
+    bulk.binaryType = "arraybuffer"
+    echo.binaryType = "arraybuffer"
+    await pc.setLocalDescription(await pc.createOffer())
+    await new Promise((resolve) => {
+        if (pc.iceGatheringState === "complete") {
+            return resolve()
+        }
+        pc.addEventListener(
+            "icegatheringstatechange",
+            () => pc.iceGatheringState === "complete" && resolve(),
+        )
+        setTimeout(resolve, 3000)
+    })
+    const answer = await (await fetch(`${remote}/rtc/offer?stack=${stack}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(pc.localDescription),
+    })).json()
+    if (answer.error) {
+        pc.close()
+        throw new Error(answer.error)
+    }
+    await pc.setRemoteDescription(answer)
+    const opened = (channel) =>
+        new Promise((resolve, reject) => {
+            if (channel.readyState === "open") {
+                return resolve()
+            }
+            channel.onopen = resolve
+            setTimeout(() =>
+                reject(
+                    new Error(
+                        `data channel ${channel.label} never opened (ICE ${pc.iceConnectionState})`,
+                    ),
+                ), 10000)
+        })
+    await Promise.all([opened(bulk), opened(echo)])
+    let bytes = 0
+    let finished = null
+    // in-band = the echo channel on the same SCTP association, not behind the bulk channel's queue
+    const ping = pinger((payload) => echo.send(payload))
+    echo.onmessage = (event) => ping.answer(new Uint8Array(event.data))
+    bulk.onmessage = (event) => {
+        const data = new Uint8Array(event.data)
+        if (data[0] === DATA) {
+            bytes += data.byteLength - 1
+        } else if (data[0] === DONE) {
+            finished = unjson(data.subarray(1))
+        }
+    }
+    bulk.send(message(START, startMessage(bitsPerSecond, seconds, queueBytes)))
+    return { ping, count: () => bytes, done: () => finished, close: () => pc.close() }
 }
 
 let zenohState = null

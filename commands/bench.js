@@ -19,8 +19,10 @@ import { version } from "../version.js"
 const agentUrl = new URL("../bench/agent.js", import.meta.url).href
 const installLine =
     "curl -fsSL https://raw.githubusercontent.com/jeff-hykin/dtk/master/install.sh | sh"
-const browserStages = ["http", "ws", "webrtc", "webtransport", "zenoh"]
-const allStages = ["loopback", "tcp", "udp", ...browserStages]
+const browserStages = ["http", "ws", "webrtc", "webrtc-js", "webtransport", "zenoh"]
+const allStages = ["loopback", "tcp", "udp", ...browserStages, "queue"]
+// webrtc-js (werift, pure JS) only on request: it is there to tell a slow stack from a slow link
+const defaultStages = allStages.filter((stage) => stage !== "webrtc-js")
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -55,13 +57,18 @@ const stageNames = {
     http: "browser HTTP",
     ws: "browser WebSocket",
     webrtc: "browser WebRTC",
+    "webrtc-js": "browser WebRTC (werift)",
     webtransport: "browser WebTransport",
     zenoh: "browser zenoh gateway",
 }
 
 // One terse line per run, so a long benchmark shows it is alive; the report has the detail.
 function progress(scope, stage, result) {
-    const where = scope === "link" ? "" : `${scope.replace("loopback-", "loopback ")} `
+    const where = scope === "link"
+        ? ""
+        : scope === "queue"
+        ? "queue sweep "
+        : `${scope.replace("loopback-", "loopback ")} `
     const latency = result.inband.p50 === null
         ? "-"
         : `${result.inband.p50}/${result.inband.p95} ms`
@@ -274,7 +281,9 @@ async function runBench(options, host) {
             if (cleaned) {
                 return
             }
-            const tail = (await remoteErr).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-6).join("\n")
+            const tail = (await remoteErr).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(
+                -6,
+            ).join("\n")
             farDied = `the far side exited early (code ${exit.code}${
                 exit.signal ? `, ${exit.signal}` : ""
             })${tail ? `: ${tail}` : ""}`
@@ -358,7 +367,7 @@ async function runBench(options, host) {
         }
 
         const inBrowser = networkStages.filter((stage) => browserStages.includes(stage))
-        if (inBrowser.length > 0) {
+        if (inBrowser.length > 0 || stages.includes("queue")) {
             const { openPage } = await import("../bench/browser.js")
             browser = await openPage({ remote: remoteBase, chrome: options.chrome })
             for (const stage of inBrowser) {
@@ -412,7 +421,9 @@ async function runBench(options, host) {
                             ),
                         )
                         // one failure to connect means every rate will fail the same way
-                        const fatal = ["webtransport", "zenoh", "webrtc"].includes(stage)
+                        const fatal = ["webtransport", "zenoh", "webrtc", "webrtc-js"].includes(
+                            stage,
+                        )
                         report.skipped.push({
                             scope: "link",
                             stage,
@@ -422,6 +433,47 @@ async function runBench(options, host) {
                         if (fatal) {
                             break
                         }
+                    }
+                    await sleep(500)
+                }
+            }
+        }
+        // the queue-depth sweep: as fast as it goes, with the sender's own queue capped at each
+        // size, so throughput and latency trade off along one curve
+        if (stages.includes("queue")) {
+            const sizes = options.queueSizes.split(",").map((each) =>
+                Math.round(Number(each) * 1024)
+            )
+            for (const stage of options.queueTransports.split(",").map((each) => each.trim())) {
+                if (!status.transports[stage]?.ok) {
+                    report.skipped.push({
+                        scope: "queue",
+                        stage,
+                        offered: "all",
+                        why: status.transports[stage]?.why ?? "not offered",
+                    })
+                    continue
+                }
+                for (const queueBytes of sizes) {
+                    if (farDied) {
+                        break
+                    }
+                    try {
+                        const result = await browser.run(stage, Infinity, seconds, { queueBytes })
+                        result.queueBytes = queueBytes
+                        report.runs.push({ scope: "queue", stage, ...result })
+                        progress("queue", stage, { ...result, offered: `${queueBytes / 1024}K` })
+                    } catch (error) {
+                        const why = String(error.message ?? error).split("\n")[0].replace(
+                            /^page\.evaluate: /,
+                            "",
+                        )
+                        report.skipped.push({
+                            scope: "queue",
+                            stage,
+                            offered: `${queueBytes / 1024} KB queue`,
+                            why,
+                        })
                     }
                     await sleep(500)
                 }
@@ -576,8 +628,14 @@ export default new Command()
         default: "0,1,5,10,25,max",
     })
     .option("--seconds <n:integer>", "Seconds per rate", { default: 3 })
-    .option("--stages <list:string>", `Which stages: ${allStages.join(",")}`, {
+    .option("--stages <list:string>", `Which stages, of ${allStages.join(",")}`, {
         default: allStages.join(","),
+    })
+    .option("--queue-sizes <list:string>", "Sender queue caps for the queue stage, KB", {
+        default: "16,64,256,1024,4096",
+    })
+    .option("--queue-transports <list:string>", "Transports the queue stage sweeps", {
+        default: "webrtc,ws",
     })
     .option("--loopback-rates <list:string>", "Offered rates for the loopback stage", {
         default: "0,100,1000,max",

@@ -129,8 +129,10 @@ dtk bench open latest                              # serve a saved report again
 | `loopback` | each machine to itself over TCP and UDP: what the machine can do with no network |
 | `tcp`, `udp` | machine to machine, the far side sending; UDP also counts lost datagrams |
 | `http`, `ws` | a headless Chromium here downloading from the far side, and over a WebSocket |
-| `webrtc` | a data channel to node-datachannel (libdatachannel) on the far side, pings on a second channel |
+| `webrtc` | a data channel to node-datachannel (libdatachannel, native) on the far side, pings on a second channel |
+| `webrtc-js` | the same against werift (pure JS); not run by default, it is there to tell a slow stack from a slow link |
 | `webtransport` | a QUIC stream to Deno's QUIC server, pings as datagrams on the same connection |
+| `queue` | WebRTC and WebSocket as fast as they go with the sender's queue capped at 16 KB … 4 MB (`--queue-sizes`): the speed-against-delay curve |
 | `zenoh` | through the zenoh gateway (dimos Desktop's by default, as `--gateway-app dim-controller`): the far side publishes a test key, the page subscribes; latency is the gateway client's heartbeat round trip |
 
 It ends with an HTML report served on localhost: plain-language takeaways first (with the
@@ -142,8 +144,9 @@ just saves.
 
 The browser page is visible and unthrottled (a background tab clamps timers to 1 Hz and every
 latency is then wrong), and is served from localhost here because WebTransport needs a secure
-context. Paced senders never queue more than 256 KB in their own transport, so latency under
-load is the network's and the kernel's, not a runaway application buffer. A UDP or zenoh "max"
+context. Paced senders never queue more than 256 KB in their own transport (high water; they
+wait for it to drain to half), so latency under load is the network's and the kernel's, not a
+runaway application buffer; the `queue` stage shows what other caps would do. A UDP or zenoh "max"
 is skipped: an unpaced flood only measures the drops it causes. Everything the far side starts
 stops when the ssh session closes (or after `--max-seconds`).
 

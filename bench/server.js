@@ -123,14 +123,18 @@ function serveWebSocket(socket) {
         if (bytes[0] === PING) {
             socket.send(message(PONG, bytes.subarray(1)))
         } else if (bytes[0] === START) {
-            const { bitsPerSecond, seconds } = unjson(bytes.subarray(1))
+            const { bitsPerSecond, seconds, queueBytes } = unjson(bytes.subarray(1))
+            const high = queueBytes ?? maxQueuedBytes
             pace({
                 bitsPerSecond: bps(bitsPerSecond),
                 seconds,
                 stop: () => stopped,
                 send: async (part) => {
-                    while (socket.bufferedAmount > maxQueuedBytes && !stopped) {
-                        await sleep(1)
+                    // over the high-water mark, wait for it to drain to half
+                    if (socket.bufferedAmount > high) {
+                        while (socket.bufferedAmount > high / 2 && !stopped) {
+                            await sleep(1)
+                        }
                     }
                     if (!stopped) {
                         socket.send(message(DATA, part))
@@ -168,22 +172,20 @@ function download(url) {
     })
 }
 
-// WebRTC server: node-datachannel (libdatachannel, native) when its prebuilt binary loads, else
-// werift (pure JS, much slower; the report says which one served)
-let rtc = null
+// WebRTC servers: node-datachannel (libdatachannel, native C++) for the "webrtc" stage, and
+// werift (pure JS) for "webrtc-js", so a slow result can be pinned on the stack or the link
+const rtcStacks = {}
 const rtcPeers = new Set()
 
 async function loadWebRtc() {
-    try {
-        const { loadNodeDatachannel } = await import("./webrtc_native.js")
-        const module = await loadNodeDatachannel()
-        rtc = { kind: "native", RTCPeerConnection: module.RTCPeerConnection }
-        return `node-datachannel ${"0.29.0"} (libdatachannel, native)`
-    } catch (error) {
-        const werift = await import("npm:werift@0.22.2")
-        rtc = { kind: "werift", RTCPeerConnection: werift.RTCPeerConnection }
-        return `werift (pure-JS WebRTC; node-datachannel failed: ${String(error).slice(0, 120)})`
-    }
+    const { loadNodeDatachannel } = await import("./webrtc_native.js")
+    rtcStacks.native = (await loadNodeDatachannel()).RTCPeerConnection
+    return "node-datachannel 0.29.0 (libdatachannel, native)"
+}
+
+async function loadWerift() {
+    rtcStacks.werift = (await import("npm:werift@0.22.2")).RTCPeerConnection
+    return "werift 0.22.2 (pure-JS WebRTC)"
 }
 
 // node-datachannel calls these from native code, where an escaping exception (a send on a
@@ -196,16 +198,40 @@ const guarded = (fn) => (...args) => {
     }
 }
 
-// Paces the bulk channel, never letting its own send queue grow past maxQueuedBytes.
+// The sender's own queue is bounded by a high and a low water mark: above 256 KB queued (or
+// the queue-depth sweep's size) it waits for the channel to drain to half, so same-connection
+// latency is the path's plus a queue of known size
+function drained(channel, lowWater) {
+    return new Promise((resolve) => {
+        const done = () => {
+            clearInterval(poll)
+            resolve()
+        }
+        // the event where the stack has it, a poll as the backstop for one that never fires
+        try {
+            channel.bufferedAmountLowThreshold = lowWater
+            channel.onbufferedamountlow = guarded(done)
+        } catch {
+            // werift has its own event shape
+        }
+        const poll = setInterval(() => {
+            if (channel.bufferedAmount <= lowWater || channel.readyState !== "open") {
+                done()
+            }
+        }, 5)
+    })
+}
+
 function bulkRun(channel, payload, send) {
-    const { bitsPerSecond, seconds } = unjson(payload)
+    const { bitsPerSecond, seconds, queueBytes } = unjson(payload)
+    const high = queueBytes ?? maxQueuedBytes
     pace({
         bitsPerSecond: bps(bitsPerSecond),
         seconds,
         stop: () => channel.readyState !== "open",
         send: async (part) => {
-            while (channel.bufferedAmount > maxQueuedBytes && channel.readyState === "open") {
-                await sleep(1)
+            if (channel.bufferedAmount > high) {
+                await drained(channel, high / 2)
             }
             if (channel.readyState === "open") {
                 send(message(DATA, part))
@@ -216,11 +242,11 @@ function bulkRun(channel, payload, send) {
 
 // The browser offers a "bulk" channel (ordered, reliable) and an "echo" one (unordered, no
 // retransmits) on the same association; the echo shares the path but not the bulk's queue.
-async function answerWebRtc(offer) {
-    if (rtc.kind === "werift") {
+async function answerWebRtc(offer, stack) {
+    if (stack === "werift") {
         return await answerWerift(offer)
     }
-    const pc = new rtc.RTCPeerConnection({ iceServers: [] })
+    const pc = new rtcStacks.native({ iceServers: [] })
     rtcPeers.add(pc)
     pc.onconnectionstatechange = guarded(() => {
         if (["closed", "failed", "disconnected"].includes(pc.connectionState)) {
@@ -255,7 +281,7 @@ async function answerWebRtc(offer) {
 }
 
 async function answerWerift(offer) {
-    const pc = new rtc.RTCPeerConnection({})
+    const pc = new rtcStacks.werift({})
     rtcPeers.add(pc)
     pc.connectionStateChange.subscribe((state) => {
         if (state === "closed" || state === "failed" || state === "disconnected") {
@@ -620,7 +646,9 @@ export async function serve(
         }
         if (url.pathname === "/rtc/offer") {
             try {
-                return Response.json(await answerWebRtc(await request.json()))
+                return Response.json(
+                    await answerWebRtc(await request.json(), url.searchParams.get("stack")),
+                )
             } catch (error) {
                 return Response.json({ error: String(error) }, { status: 500 })
             }
@@ -679,10 +707,15 @@ export async function serve(
 
     status.transports.http = { ok: true }
     status.transports.ws = { ok: true }
-    try {
-        status.transports.webrtc = { ok: true, how: await loadWebRtc() }
-    } catch (error) {
-        status.transports.webrtc = { ok: false, why: `no WebRTC stack loaded: ${error}` }
+    for (const [name, load] of [["webrtc", loadWebRtc], ["webrtc-js", loadWerift]]) {
+        try {
+            status.transports[name] = { ok: true, how: await load() }
+        } catch (error) {
+            status.transports[name] = {
+                ok: false,
+                why: `could not load it: ${String(error).slice(0, 200)}`,
+            }
+        }
     }
     if (typeof Deno.QuicEndpoint !== "function" || typeof Deno.upgradeWebTransport !== "function") {
         status.transports.webtransport = {
