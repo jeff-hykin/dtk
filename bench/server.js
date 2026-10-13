@@ -286,6 +286,7 @@ async function serveWebTransport(endpoint, cert, key) {
         ;(async () => {
             const conn = await incoming.accept()
             const transport = await Deno.upgradeWebTransport(conn)
+            transport.closed.catch(() => {})
             await transport.ready
             const datagrams = transport.datagrams.writable.getWriter()
             ;(async () => {

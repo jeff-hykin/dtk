@@ -268,7 +268,8 @@ export function takeaways(report) {
     for (const stage of ["http", "ws", "webrtc", "webtransport", "zenoh"]) {
         const runs = runsOf(report, stage)
         const top = maxOf(runs)
-        if (!top || !tcpMax) {
+        // only an idle run says nothing about speed
+        if (!top || !tcpMax || !runs.some((run) => run.offeredBps !== 0)) {
             continue
         }
         const share = Math.min(100, (100 * top.mbps) / tcpMax.mbps)

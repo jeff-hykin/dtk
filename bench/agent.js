@@ -45,6 +45,13 @@ async function runStages({ host, tcp, udp, echo, rates, seconds, stages }) {
     }
 }
 
+// One connection failing (a QUIC idle timeout rejecting a promise nobody awaits) must not take
+// every other transport down with the process
+globalThis.addEventListener("unhandledrejection", (event) => {
+    event.preventDefault()
+    console.error(`dtk bench: ignored: ${event.reason?.message ?? event.reason}`)
+})
+
 if (mode === "serve") {
     const maxSeconds = Number(options["max-seconds"] ?? 900)
     const server = await serve({

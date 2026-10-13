@@ -274,7 +274,7 @@ async function runBench(options, host) {
             if (cleaned) {
                 return
             }
-            const tail = (await remoteErr).trim().split("\n").slice(-6).join("\n")
+            const tail = (await remoteErr).replace(/\x1b\[[0-9;]*m/g, "").trim().split("\n").slice(-6).join("\n")
             farDied = `the far side exited early (code ${exit.code}${
                 exit.signal ? `, ${exit.signal}` : ""
             })${tail ? `: ${tail}` : ""}`
