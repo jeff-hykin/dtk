@@ -629,7 +629,7 @@ export default new Command()
     })
     .option("--seconds <n:integer>", "Seconds per rate", { default: 3 })
     .option("--stages <list:string>", `Which stages, of ${allStages.join(",")}`, {
-        default: allStages.join(","),
+        default: defaultStages.join(","),
     })
     .option("--queue-sizes <list:string>", "Sender queue caps for the queue stage, KB", {
         default: "16,64,256,1024,4096",
