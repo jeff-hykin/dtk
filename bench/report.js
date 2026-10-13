@@ -340,6 +340,9 @@ export function takeaways(report) {
         const kb = (
             bytes,
         ) => (bytes >= 1024 * 1024 ? `${bytes / 1024 / 1024} MB` : `${bytes / 1024} KB`)
+        const biggestDelay = biggest.inband.n
+            ? `${ms(biggest.inband.p50)} (1 in 20: ${ms(biggest.inband.p95)})`
+            : "no same-connection echo coming back at all"
         say(
             latencyVerdict(enough.inband.p95),
             `${names[stage]}: a ${kb(enough.queueBytes)} send queue already reaches ${
@@ -348,12 +351,15 @@ export function takeaways(report) {
                 ms(enough.inband.p50)
             } delay on the same connection (1 in 20: ${ms(enough.inband.p95)}); a ${
                 kb(biggest.queueBytes)
-            } queue gets ${mbit(biggest.mbps)} with ${ms(biggest.inband.p50)} (1 in 20: ${
-                ms(biggest.inband.p95)
-            }). A bigger queue buys little speed and costs delay.`,
+            } queue gets ${
+                mbit(biggest.mbps)
+            } with ${biggestDelay}. A bigger queue buys little speed and costs delay.`,
         )
         const starved = sweep.filter((run) => run.inband.n === 0 || (run.inband.loss ?? 0) > 30)
         if (starved.length) {
+            const why = stage === "ws"
+                ? "On a WebSocket the echo waits behind every queued byte, and one that waited over 2 s counts as lost."
+                : "Something on the same association (the far side's stream scheduling, or the browser's) is starving small messages behind bulk data."
             say(
                 "bad",
                 `${
@@ -363,7 +369,7 @@ export function takeaways(report) {
                         .join(", ")
                 }), so those delays are the few echoes that got through. Over a separate connection at the same time the delay was ${
                     starved.map((run) => ms(run.side.p50)).join(" / ")
-                } (p50). Something on the same association (the far side's stream scheduling, or the browser's) is starving small messages behind bulk data.`,
+                } (p50). ${why}`,
             )
         }
     }
