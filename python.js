@@ -119,6 +119,14 @@ export function uvIsInstalled() {
     }
 }
 
+function isFile(path) {
+    try {
+        return Deno.statSync(path).isFile
+    } catch {
+        return false
+    }
+}
+
 export async function runPython({
     script,
     args = [],
@@ -140,10 +148,17 @@ export async function runPython({
         console.error(`dtk: python project ${root ?? "(none)"} — ${why}`)
     }
     const uvArguments = ["run"]
+    const env = {}
     if (root === null) {
         uvArguments.push("--no-project")
     } else {
         uvArguments.push("--project", root)
+        // an existing environment is used as it is: a sync would drop its extras and could swap its interpreter
+        const venvPython = `${root}/.venv/bin/python`
+        if (isFile(venvPython)) {
+            uvArguments.push("--no-sync")
+            env.UV_PYTHON = venvPython
+        }
     }
     for (const each of withPackages) {
         uvArguments.push("--with", each)
@@ -155,6 +170,7 @@ export async function runPython({
     }
     const command = new Deno.Command("uv", {
         args: uvArguments,
+        env,
         stdin: capture ? "null" : "inherit",
         stdout: capture ? "piped" : "inherit",
         stderr: capture ? "piped" : "inherit",
