@@ -30,7 +30,8 @@ let assumeYes = false
 for (let index = 0; index < args.length; index++) {
     const argument = args[index]
     if (argument === "-h" || argument === "--help") {
-        console.log(`db_tf_reroot — make the lidar the odometry child in a dimos memory2 .db, in place
+        console.log(
+            `db_tf_reroot — make the lidar the odometry child in a dimos memory2 .db, in place
 
 Usage: db_tf_reroot <recording.db> [--lidar FRAME] [--base FRAME]
                     [--odometry auto|tf|STREAM] [--pose-of FRAME] [--dry-run] [-y]
@@ -50,7 +51,8 @@ Options:
   -y, --yes           Skip the confirmation prompt
 
 Every edge on the base -> lidar chain has to be constant, or nothing is written.
-A tree already rooted this way is left alone.`)
+A tree already rooted this way is left alone.`,
+        )
         Deno.exit(0)
     } else if (argument === "--lidar") {
         lidarFrame = args[++index]
@@ -95,7 +97,10 @@ const quaternionMultiply = ([ax, ay, az, aw], [bx, by, bz, bw]) => [
 const conjugate = ([x, y, z, w]) => [-x, -y, -z, w]
 
 const rotate = (quaternion, [x, y, z]) => {
-    const [rx, ry, rz] = quaternionMultiply(quaternionMultiply(quaternion, [x, y, z, 0]), conjugate(quaternion))
+    const [rx, ry, rz] = quaternionMultiply(
+        quaternionMultiply(quaternion, [x, y, z, 0]),
+        conjugate(quaternion),
+    )
     return [rx, ry, rz]
 }
 
@@ -130,7 +135,9 @@ const describe = (pose) => {
     const pitch = Math.asin(Math.max(-1, Math.min(1, 2 * (qw * qy - qz * qx))))
     const yaw = Math.atan2(2 * (qw * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
     const degrees = (radians) => (radians * 180 / Math.PI).toFixed(2)
-    return `xyz [${[x, y, z].map((n) => n.toFixed(4)).join(", ")}] rpy [${degrees(roll)}, ${degrees(pitch)}, ${degrees(yaw)}] deg`
+    return `xyz [${[x, y, z].map((n) => n.toFixed(4)).join(", ")}] rpy [${degrees(roll)}, ${
+        degrees(pitch)
+    }, ${degrees(yaw)}] deg`
 }
 
 // ---------------------------------------------------------------- lcm
@@ -243,11 +250,17 @@ const tfRows = streamRows.filter((row) => {
 })
 for (const row of tfRows) {
     if ((configOf(row).codec_id ?? "lcm") !== "lcm") {
-        fail(`stream "${row.name}" is stored as ${configOf(row).codec_id}; db_tf_reroot only handles plain lcm`)
+        fail(
+            `stream "${row.name}" is stored as ${
+                configOf(row).codec_id
+            }; db_tf_reroot only handles plain lcm`,
+        )
     }
 }
 const tfStreams = tfRows.map((row) => row.name)
-const dynamicStream = tfStreams.includes("tf") ? "tf" : tfStreams.find((each) => !each.endsWith("_static")) ?? null
+const dynamicStream = tfStreams.includes("tf")
+    ? "tf"
+    : tfStreams.find((each) => !each.endsWith("_static")) ?? null
 if (dynamicStream === null) {
     fail(`${dbPath} has no tf stream`)
 }
@@ -277,17 +290,27 @@ for (const message of messages) {
 const parentsOf = (frame) => [...(edges.get(frame)?.keys() ?? [])]
 
 for (const frame of [lidarFrame, baseFrame]) {
-    if (parentsOf(frame).length === 0 && ![...edges.values()].some((parents) => parents.has(frame))) {
+    if (
+        parentsOf(frame).length === 0 && ![...edges.values()].some((parents) => parents.has(frame))
+    ) {
         fail(`no tf edge names ${frame}`)
     }
 }
 if (parentsOf(baseFrame).length === 1 && parentsOf(baseFrame)[0] === lidarFrame) {
-    console.log(`${dbPath}: already ${parentsOf(lidarFrame).join("|")} -> ${lidarFrame} -> ${baseFrame}, nothing to do`)
+    console.log(
+        `${dbPath}: already ${
+            parentsOf(lidarFrame).join("|")
+        } -> ${lidarFrame} -> ${baseFrame}, nothing to do`,
+    )
     db.close()
     Deno.exit(0)
 }
 if (parentsOf(baseFrame).length !== 1) {
-    fail(`${baseFrame} should have one parent, it has ${parentsOf(baseFrame).length}: ${parentsOf(baseFrame).join(", ")}`)
+    fail(
+        `${baseFrame} should have one parent, it has ${parentsOf(baseFrame).length}: ${
+            parentsOf(baseFrame).join(", ")
+        }`,
+    )
 }
 const odomFrame = parentsOf(baseFrame)[0]
 
@@ -298,7 +321,11 @@ const chain = [lidarFrame]
 while (walking !== baseFrame) {
     const parents = parentsOf(walking)
     if (parents.length !== 1) {
-        fail(`${walking} should have one parent on the way to ${baseFrame}, it has ${parents.length}: ${parents.join(", ")}`)
+        fail(
+            `${walking} should have one parent on the way to ${baseFrame}, it has ${parents.length}: ${
+                parents.join(", ")
+            }`,
+        )
     }
     const parent = parents[0]
     if (parent === odomFrame || chain.includes(parent)) {
@@ -307,7 +334,9 @@ while (walking !== baseFrame) {
     const poses = edges.get(walking).get(parent)
     for (const pose of poses) {
         if (pose.some((value, at) => Math.abs(value - poses[0][at]) > 1e-9)) {
-            fail(`${parent} -> ${walking} changes over time, so the mount is not static; nothing written`)
+            fail(
+                `${parent} -> ${walking} changes over time, so the mount is not static; nothing written`,
+            )
         }
     }
     mount = compose(poses[0], mount)
@@ -321,7 +350,9 @@ const lidarParent = chain[1]
 const countOf = (name) => db.prepare(`SELECT COUNT(*) AS n FROM "${name}"`).get().n
 const streamNames = new Set(streamRows.map((row) => row.name))
 if (source === "auto") {
-    source = streamNames.has("pointlio_odometry") && countOf("pointlio_odometry") > 0 ? "pointlio_odometry" : "tf"
+    source = streamNames.has("pointlio_odometry") && countOf("pointlio_odometry") > 0
+        ? "pointlio_odometry"
+        : "tf"
 } else if (source !== "tf" && !streamNames.has(source)) {
     fail(`no stream named ${source}`)
 }
@@ -351,7 +382,15 @@ if (source !== "tf") {
         const newEnd = sourcePoses[sourcePoses.length - 1].ts
         const overlap = Math.max(0, Math.min(oldEnd, newEnd) - Math.max(oldStart, newStart))
         if (overlap < 0.9 * (oldEnd - oldStart)) {
-            fail(`${source} spans ${newStart.toFixed(1)}..${newEnd.toFixed(1)} but ${odomFrame} -> ${baseFrame} spans ${oldStart.toFixed(1)}..${oldEnd.toFixed(1)} (${(overlap / Math.max(1e-9, oldEnd - oldStart) * 100).toFixed(0)}% overlap) — a different clock? nothing written; --odometry tf keeps the existing edge`)
+            fail(
+                `${source} spans ${newStart.toFixed(1)}..${
+                    newEnd.toFixed(1)
+                } but ${odomFrame} -> ${baseFrame} spans ${oldStart.toFixed(1)}..${
+                    oldEnd.toFixed(1)
+                } (${
+                    (overlap / Math.max(1e-9, oldEnd - oldStart) * 100).toFixed(0)
+                }% overlap) — a different clock? nothing written; --odometry tf keeps the existing edge`,
+            )
         }
     }
 }
@@ -362,7 +401,9 @@ if (describedFrame === lidarFrame) {
 } else if (describedFrame === baseFrame) {
     sourceToLidar = mount
 } else {
-    fail(`${source}'s poses are of ${describedFrame}; pass --pose-of ${lidarFrame} or --pose-of ${baseFrame}`)
+    fail(
+        `${source}'s poses are of ${describedFrame}; pass --pose-of ${lidarFrame} or --pose-of ${baseFrame}`,
+    )
 }
 
 const mountInverse = invert(mount)
@@ -370,10 +411,18 @@ console.log(dbPath)
 console.log(`  before  ${odomFrame} -> ${[...chain].reverse().join(" -> ")}`)
 console.log(`  after   ${odomFrame} -> ${lidarFrame} -> ${baseFrame}`)
 console.log(`  mount   ${baseFrame} -> ${lidarFrame}  ${describe(mount)}`)
-console.log(`  ${lidarParent} -> ${lidarFrame} becomes ${lidarFrame} -> ${baseFrame}  ${describe(mountInverse)}`)
+console.log(
+    `  ${lidarParent} -> ${lidarFrame} becomes ${lidarFrame} -> ${baseFrame}  ${
+        describe(mountInverse)
+    }`,
+)
 const labelled = describedFrame === declaredFrame ? "" : ` (labelled ${declaredFrame})`
-const sourceName = source === "tf" ? `the ${odomFrame} -> ${baseFrame} edge on tf` : `${source} (${sourceFrame} -> ${declaredFrame}, ${sourcePoses.length} poses)`
-console.log(`  ${odomFrame} -> ${lidarFrame} from ${sourceName}, as poses of ${describedFrame}${labelled}`)
+const sourceName = source === "tf"
+    ? `the ${odomFrame} -> ${baseFrame} edge on tf`
+    : `${source} (${sourceFrame} -> ${declaredFrame}, ${sourcePoses.length} poses)`
+console.log(
+    `  ${odomFrame} -> ${lidarFrame} from ${sourceName}, as poses of ${describedFrame}${labelled}`,
+)
 
 // ---------------------------------------------------------------- the plan
 
@@ -388,14 +437,23 @@ for (const message of messages) {
         if (transform.parent === odomFrame && transform.child === baseFrame) {
             changed = true
             if (source === "tf") {
-                transforms.push({ ...transform, child: lidarFrame, pose: compose(transform.pose, sourceToLidar) })
+                transforms.push({
+                    ...transform,
+                    child: lidarFrame,
+                    pose: compose(transform.pose, sourceToLidar),
+                })
                 converted++
             } else {
                 dropped++
             }
         } else if (transform.parent === lidarParent && transform.child === lidarFrame) {
             changed = true
-            transforms.push({ ...transform, parent: lidarFrame, child: baseFrame, pose: mountInverse })
+            transforms.push({
+                ...transform,
+                parent: lidarFrame,
+                child: baseFrame,
+                pose: mountInverse,
+            })
             flipped++
         } else {
             transforms.push(transform)
@@ -417,7 +475,8 @@ for (const message of messages) {
     }
 }
 if (sourcePoses !== null) {
-    const fingerprint = messages.find((each) => each.stream === dynamicStream)?.fingerprint ?? messages[0].fingerprint
+    const fingerprint = messages.find((each) => each.stream === dynamicStream)?.fingerprint ??
+        messages[0].fingerprint
     for (const each of sourcePoses) {
         const stamp = stampFor(each.ts)
         plan.push({
@@ -436,8 +495,14 @@ if (sourcePoses !== null) {
     }
 }
 const kinds = (kind) => plan.filter((each) => each.kind === kind).length
-console.log(`  ${flipped} mount edge(s) flipped, ${converted} ${odomFrame} -> ${baseFrame} converted, ${dropped} dropped`)
-console.log(`  ${kinds("update")} message(s) rewritten, ${kinds("delete")} deleted (left empty), ${kinds("insert")} inserted`)
+console.log(
+    `  ${flipped} mount edge(s) flipped, ${converted} ${odomFrame} -> ${baseFrame} converted, ${dropped} dropped`,
+)
+console.log(
+    `  ${kinds("update")} message(s) rewritten, ${kinds("delete")} deleted (left empty), ${
+        kinds("insert")
+    } inserted`,
+)
 
 if (dryRun) {
     console.log("dry run — nothing changed")
@@ -450,15 +515,21 @@ if (!assumeYes && !confirm("Rewrite the tf tree?")) {
     Deno.exit(1)
 }
 
-const hasTags = (stream) => db.prepare(`PRAGMA table_info("${stream}")`).all().some((column) => column.name === "tags")
+const hasTags = (stream) =>
+    db.prepare(`PRAGMA table_info("${stream}")`).all().some((column) => column.name === "tags")
 const tagged = new Map(tfStreams.map((stream) => [stream, hasTags(stream)]))
 db.exec("BEGIN")
 try {
     for (const step of plan) {
         if (step.kind === "update") {
-            db.prepare(`UPDATE "${step.stream}_blob" SET data = ? WHERE id = ?`).run(step.data, step.id)
+            db.prepare(`UPDATE "${step.stream}_blob" SET data = ? WHERE id = ?`).run(
+                step.data,
+                step.id,
+            )
             if (tagged.get(step.stream)) {
-                db.prepare(`UPDATE "${step.stream}" SET tags = jsonb_set(tags, '$.child_frame', ?) WHERE id = ?`)
+                db.prepare(
+                    `UPDATE "${step.stream}" SET tags = jsonb_set(tags, '$.child_frame', ?) WHERE id = ?`,
+                )
                     .run(step.childFrame, step.id)
             }
         } else if (step.kind === "delete") {
@@ -466,10 +537,17 @@ try {
             db.prepare(`DELETE FROM "${step.stream}" WHERE id = ?`).run(step.id)
         } else {
             const row = tagged.get(step.stream)
-                ? db.prepare(`INSERT INTO "${step.stream}" (ts, tags) VALUES (?, jsonb(?)) RETURNING id`)
+                ? db.prepare(
+                    `INSERT INTO "${step.stream}" (ts, tags) VALUES (?, jsonb(?)) RETURNING id`,
+                )
                     .get(step.ts, JSON.stringify({ child_frame: lidarFrame }))
-                : db.prepare(`INSERT INTO "${step.stream}" (ts) VALUES (?) RETURNING id`).get(step.ts)
-            db.prepare(`INSERT INTO "${step.stream}_blob" (id, data) VALUES (?, ?)`).run(row.id, step.data)
+                : db.prepare(`INSERT INTO "${step.stream}" (ts) VALUES (?) RETURNING id`).get(
+                    step.ts,
+                )
+            db.prepare(`INSERT INTO "${step.stream}_blob" (id, data) VALUES (?, ?)`).run(
+                row.id,
+                step.data,
+            )
         }
     }
     db.exec("COMMIT")
