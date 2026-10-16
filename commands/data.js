@@ -240,6 +240,17 @@ const tf = new Command()
         }),
     )
     .command(
+        "reroot",
+        perFormat({
+            name: "tf reroot",
+            description: "Make the lidar the odometry child: odom -> lidar -> base_link (pointlio_odometry drives it when present)",
+            usage: "<recording> [--lidar mid360_link] [--base base_link] [--odometry auto|tf|<stream>] [--pose-of <frame>] [-n] [-y]",
+            byFormat: {
+                db: (recording, rest) => ({ tool: "db_tf_reroot", args: [recording, ...rest] }),
+            },
+        }),
+    )
+    .command(
         "namespace",
         new Command()
             .name("namespace")

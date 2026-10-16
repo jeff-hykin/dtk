@@ -69,6 +69,14 @@ export const tools = [
         permissions: denoRecordingPermissions,
     },
     {
+        name: "db_tf_reroot",
+        kind: "deno",
+        description: "Make the lidar the odometry child (odom -> lidar -> base_link) in a memory2 .db, in place",
+        entry: "tools/db_tf_reroot.js",
+        formats: ["db"],
+        permissions: denoRecordingPermissions,
+    },
+    {
         name: "db_cp",
         kind: "deno",
         description: "Copy one stream from one memory2 .db into another",

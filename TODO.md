@@ -109,6 +109,14 @@ the tool underneath reads only one format, the recording is converted first (kep
 - [x] `dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]` — both formats,
       through the same rename path. Running it twice prefixes twice; nothing distinguishes an
       already-prefixed name from one that starts that way.
+- [x] `dtk data tf reroot <recording>` (db only, `db_tf_reroot`) — `odom -> base_link -> ... ->
+      mid360_link` becomes `odom -> mid360_link -> base_link -> ...`. The static base -> lidar
+      chain (refused unless constant) is composed into one mount; the edge that hung the lidar
+      off it becomes `lidar -> base_link`, published where the old one was. `odom -> lidar` comes
+      from `pointlio_odometry` when it has messages (written at its own row timestamps, old
+      `odom -> base_link` messages dropped), else from the existing edge. `--pose-of` says which
+      frame a pose really is, since the go2 recordings' odometry labels the lidar's pose
+      `base_link`. Idempotent. Applied to the 8 mid360 recordings 2026-10-16.
 
 ### conversions
 

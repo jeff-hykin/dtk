@@ -174,6 +174,7 @@ dtk data tf tree <recording>
 dtk data tf full_check <recording>
 dtk data tf rename <recording> <old> <new>
 dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]
+dtk data tf reroot <recording> [--odometry auto|tf|<stream>] [--pose-of <frame>]   # odom -> lidar -> base_link
 ```
 
 ### Running a blueprint
