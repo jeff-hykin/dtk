@@ -46,7 +46,7 @@ import { Database } from "jsr:@db/sqlite@0.12"
 import { McapIndexedReader } from "https://esm.sh/@mcap/core@2.1.7"
 import { decompress as zstdDecompress } from "https://esm.sh/fzstd@0.1.1"
 import lz4 from "https://esm.sh/lz4js@0.2.0"
-import { PointCloud2, PointField, CompressedImage, Image, CameraInfo, Imu } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/sensor_msgs"
+import { PointCloud2, PointField, CompressedImage, Image, CameraInfo, Imu, JointState } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/sensor_msgs"
 import { Odometry } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/nav_msgs"
 import { TFMessage } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/tf2_msgs"
 import { TransformStamped } from "https://esm.sh/jsr/@dimos/msgs@0.1.4/geometry_msgs"
@@ -258,6 +258,20 @@ const CONVERTERS = {
         message.linear_acceleration_covariance = reader.float64s(9)
         return { lcmBytes: message.encode(), stampSeconds: header.stamp.sec + header.stamp.nsec / 1e9, pose: null }
     },
+    // name is string[]; position, velocity and effort are float64[], each with its own length prefix.
+    "sensor_msgs/msg/JointState": (bytes, seq) => {
+        const reader = new CdrReader(bytes)
+        const header = reader.header()
+        const message = new JointState()
+        fillHeader(message.header, header, seq)
+        message.name = Array.from({ length: reader.uint32() }, () => reader.string())
+        message.name_length = message.name.length
+        for (const field of ["position", "velocity", "effort"]) {
+            message[field] = reader.float64s(reader.uint32())
+            message[`${field}_length`] = message[field].length
+        }
+        return { lcmBytes: message.encode(), stampSeconds: header.stamp.sec + header.stamp.nsec / 1e9, pose: null }
+    },
     "sensor_msgs/msg/CameraInfo": (bytes, seq) => {
         const reader = new CdrReader(bytes)
         const header = reader.header()
@@ -306,6 +320,7 @@ const PAYLOAD_MODULES = {
     "sensor_msgs/msg/Image": "dimos.msgs.sensor_msgs.Image.Image",
     "sensor_msgs/msg/CameraInfo": "dimos.msgs.sensor_msgs.CameraInfo.CameraInfo",
     "sensor_msgs/msg/Imu": "dimos.msgs.sensor_msgs.Imu.Imu",
+    "sensor_msgs/msg/JointState": "dimos.msgs.sensor_msgs.JointState.JointState",
     "sensor_msgs/msg/PointCloud2": "dimos.msgs.sensor_msgs.PointCloud2.PointCloud2",
     "nav_msgs/msg/Odometry": "dimos.msgs.nav_msgs.Odometry.Odometry",
     "tf2_msgs/msg/TFMessage": "dimos.msgs.tf2_msgs.TFMessage.TFMessage",
@@ -372,6 +387,7 @@ const flatName = (topic) => topic.replace(/^\//, "").replace(/\//g, "_")
 const spacedName = (topic) => topic.replace(/^\//, "").replace(/\//g, "__")
 
 const eligible = []
+const unconverted = []
 const IMAGE_SCHEMAS = new Set(["sensor_msgs/msg/CompressedImage", "sensor_msgs/msg/Image"])
 for (const channel of reader.channelsById.values()) {
     if (mapping.size > 0 && !mapping.has(channel.topic)) {
@@ -396,7 +412,12 @@ for (const channel of reader.channelsById.values()) {
         const [pkg, type] = lcmType.split(".")
         const payloadModule = `dimos.msgs.${pkg}.${type}.${type}`
         eligible.push({ channel, schema: { name: lcmType }, payloadModule, name: mapping.get(channel.topic), lcm: true })
+        continue
     }
+    unconverted.push(`${channel.topic} (${schema?.name ?? "no schema"}, ${channel.messageEncoding})`)
+}
+if (unconverted.length) {
+    console.log(`left out, no converter for their type: ${unconverted.join(", ")}`)
 }
 
 // What an image channel becomes is a property of the channel, not of one message,
