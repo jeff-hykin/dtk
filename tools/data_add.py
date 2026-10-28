@@ -110,8 +110,8 @@ def load_class(reference: str):
 
 
 def stream_payload_types(module_class) -> dict[str, type]:
-    """The payload type behind each `In[...]` / `Out[...]` annotation, which is what a
-    transport has to be built with.
+    """The payload type behind each `In[...]` / `Out[...]` / `IO[...]` annotation, which
+    is what a transport has to be built with.
 
     `get_type_hints` rather than raw `__annotations__`, because dimos modules use
     `from __future__ import annotations` and those are strings until they are resolved."""
@@ -127,9 +127,38 @@ def stream_payload_types(module_class) -> dict[str, type]:
         origin = typing.get_origin(annotation)
         if origin is None or not arguments:
             continue
-        if getattr(origin, "__name__", "") in ("In", "Out"):
+        if getattr(origin, "__name__", "") in ("In", "Out", "IO"):
             types[name] = arguments[0]
     return types
+
+
+# `make_transport` has moved between modules across dimos branches, so it is
+# looked up the way `run_supervisor.py` looks it up rather than imported from
+# one place.
+MAKE_TRANSPORT_MODULES = (
+    "dimos.core.transport_factory",
+    "dimos.core.transport",
+    "dimos.robot.core.transport_factory",
+)
+
+
+def transport_maker():
+    """Builds a transport on the backend the modules will be on (`DIMOS_TRANSPORT`).
+
+    A native module is told that backend and handed each port's channel, so an LCM
+    channel given to a module on zenoh is a port nothing ever reaches. A checkout with
+    no `make_transport` predates zenoh, and LCM is the only backend it has."""
+    for module_name in MAKE_TRANSPORT_MODULES:
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:
+            continue
+        found = getattr(module, "make_transport", None)
+        if found is not None:
+            return found
+    from dimos.core.transport import LCMTransport
+
+    return LCMTransport
 
 
 # ------------------------------------------------------------------ renaming out of the way
@@ -266,7 +295,6 @@ def main() -> None:
     # dimos environment behind them.
     from dimos.core.coordination.module_coordinator import ModuleCoordinator
     from dimos.core.global_config import global_config
-    from dimos.core.transport import LCMTransport
     try:
         from dimos.memory.store.sqlite import SqliteStore
     except ImportError:  # checkouts from before memory2 was renamed to memory
@@ -328,6 +356,7 @@ def main() -> None:
                         pass  # a frozen message; nothing to do about it here
         return payload
 
+    make_transport = transport_maker()
     try:
         publishers = {}
         for index, plan in enumerate(plans):
@@ -337,32 +366,41 @@ def main() -> None:
             deployed.append(module)
             channel = f"/dtk_add/{index}"
 
-            for stream, source in plan["inputs"].items():
+            for stream in [*plan["inputs"], *plan["outputs"]]:
                 if stream not in payload_types:
-                    sys.exit(f"{module_class.__name__} has no input stream called {stream!r}")
+                    sys.exit(f"{module_class.__name__} has no stream called {stream!r}")
+            both = set(plan["inputs"]) & set(plan["outputs"])
+            if both:
+                sys.exit(f"{', '.join(sorted(both))} cannot be both an input and an output")
+
+            for stream, source in plan["inputs"].items():
                 topic = f"{channel}/in/{stream}"
-                transport = LCMTransport(topic, payload_types[stream])
-                getattr(module, stream).transport = transport
+                getattr(module, stream).transport = make_transport(topic, payload_types[stream])
                 publishers[(index, stream)] = (
                     source,
-                    LCMTransport(topic, payload_types[stream]),
+                    make_transport(topic, payload_types[stream]),
                     plan["spec"]["tf_remappings"],
                 )
 
             for stream, target in plan["outputs"].items():
-                if stream not in payload_types:
-                    sys.exit(f"{module_class.__name__} has no output stream called {stream!r}")
                 topic = f"{channel}/out/{stream}"
-                transport = LCMTransport(topic, payload_types[stream])
-                getattr(module, stream).transport = transport
+                getattr(module, stream).transport = make_transport(topic, payload_types[stream])
                 sink = store.stream(target, payload_types[stream])
-                listener = LCMTransport(topic, payload_types[stream])
+                listener = make_transport(topic, payload_types[stream])
 
                 def capture(payload, sink=sink, target=target):
                     sink.append(payload, ts=time.time())
                     written[target] += 1
 
                 listener.subscribe(capture)
+
+            # A blueprint gives every port a transport, and a native module refuses
+            # to start without a topic for each of its ports. The ones the spec does
+            # not mention go on channels of their own that nothing else is on.
+            for stream, payload_type in payload_types.items():
+                if stream not in plan["inputs"] and stream not in plan["outputs"]:
+                    getattr(module, stream).transport = make_transport(
+                        f"{channel}/unused/{stream}", payload_type)
 
             module.start()
 
