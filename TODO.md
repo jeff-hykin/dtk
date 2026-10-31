@@ -98,6 +98,10 @@ the tool underneath reads only one format, the recording is converted first (kep
           decoder for every message in the file — out of proportion to the fix. Instead
           `tf full_check` now REPORTS it (`unplaced`), and both rename tools say so when they
           finish, so the problem is always visible even though it is not automatic.
+    - [x] `dtk data topic frame <recording.db> <stream> --header OLD=NEW --child OLD=NEW` —
+          `db_frame_rename` rewrites one stream's `header.frame_id` / `child_frame_id`, using a
+          per-type count of the array lengths LCM writes before the header. The rows it touches
+          are backed up next to the recording first. mcap is refused (CDR re-padding).
 - [x] `dtk data tf add <recording> '<json>'` — one edge or a list:
       `{parent, child, translation, rotation, static}`, translation defaulting to [0,0,0] and
       rotation to [0,0,0,1] in ROS 2's x,y,z,w order, either also accepted as {x,y,z[,w]}.

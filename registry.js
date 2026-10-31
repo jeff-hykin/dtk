@@ -93,6 +93,14 @@ export const tools = [
         permissions: denoRecordingPermissions,
     },
     {
+        name: "db_frame_rename",
+        kind: "deno",
+        description: "Rename header.frame_id / child_frame_id in one stream of a memory2 .db, in place",
+        entry: "tools/db_frame_rename.js",
+        formats: ["db"],
+        permissions: denoRecordingPermissions,
+    },
+    {
         name: "db_delete",
         kind: "deno",
         description: "Drop a stream from a memory2 .db",

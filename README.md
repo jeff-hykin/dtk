@@ -169,6 +169,7 @@ dtk data check <recording.mcap>
 dtk data topic rename <recording> <old> <new>
 dtk data topic delete <recording> <topic>
 dtk data topic copy --from A --to B --topic NAME
+dtk data topic frame <recording.db> <stream> [--header OLD=NEW] [--child OLD=NEW]   # the frame its messages name
 
 dtk data tf tree <recording>
 dtk data tf full_check <recording>

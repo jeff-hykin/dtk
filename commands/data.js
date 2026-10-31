@@ -75,7 +75,7 @@ const ENCODE_HELP = "--encode TOPIC=keep|raw|jpeg[:Q] (repeatable), --image-enco
 
 const topic = new Command()
     .name("topic")
-    .description("Rename, delete or copy a topic/stream")
+    .description("Rename, delete or copy a topic/stream, or rename the frame its messages name")
     .action(function () {
         this.showHelp()
     })
@@ -112,6 +112,24 @@ const topic = new Command()
                     rest.length < 1
                         ? "dtk data topic delete: need <stream>"
                         : { tool: "db_delete", args: [recording, ...rest] },
+            },
+        }),
+    )
+    .command(
+        "frame",
+        perFormat({
+            name: "topic frame",
+            description: "Rename the frame one stream's messages name: header.frame_id and/or child_frame_id (tf untouched)",
+            usage: "<recording> <stream> [--header OLD=NEW] [--child OLD=NEW] [-n] [-y]",
+            byFormat: {
+                db: (recording, rest) =>
+                    rest.length < 1
+                        ? "dtk data topic frame: need <stream>"
+                        : { tool: "db_frame_rename", args: [recording, ...rest] },
+                // CDR pads each field to its own alignment, so a longer or shorter
+                // string shifts the padding of everything after it; that needs the type
+                mcap: () =>
+                    "dtk data topic frame: .mcap is not supported (re-padding CDR after a string needs each message type); convert with `dtk data to_db`, rename, then `dtk data to_mcap`",
             },
         }),
     )
