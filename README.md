@@ -150,6 +150,29 @@ runaway application buffer; the `queue` stage shows what other caps would do. A 
 is skipped: an unpaced flood only measures the drops it causes. Everything the far side starts
 stops when the ssh session closes (or after `--max-seconds`).
 
+### Who is on a machine
+
+`dtk who <ssh-host>` answers "who is connected to this robot, and what are they running" with
+one read-only ssh call (nothing on the far side is started, stopped or written):
+
+```sh
+dtk who AlfredJetson                                # an ssh config entry, or user@host
+dtk who nvidia@r1-pro-0219 --ssh-args "-F /dev/null"
+dtk who robot --hours 24 --json                     # logins further back, machine-readable
+```
+
+It lists each ssh session (from where, which key, and whether it is a shell, VS Code/Cursor,
+sftp/scp, a command, or port forwarding only), editor servers with their terminals and agents
+(claude, codex, copilot), `who` logins, accepted ssh logins grouped by address (from the
+journal; needs `adm`/`systemd-journal`), dimos blueprints and simhub runs, and the busiest
+processes. Times are in the far side's zone and in UTC.
+
+Addresses are named here: tailscale's peer list (with the owner), the LAN endpoint each online
+peer answers `tailscale ping` on (cached an hour in `~/.cache/dtk/who/`; `--refresh` re-pings),
+the notes in `~/.config/dtk/known_hosts.json` (an `"ip": "name"` map you keep), and for the rest
+a quick look: `Server: AirTunes` on :5000 means a Mac, reverse DNS, and the ARP entry's MAC.
+Key names come from the comments in the far side's `authorized_keys`.
+
 ### Working on a recording
 
 `dtk data <verb>` is one namespace for everything that operates on a recording, and every verb

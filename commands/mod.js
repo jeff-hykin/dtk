@@ -18,6 +18,7 @@ import list from "./list.js"
 import remove from "./remove.js"
 import update from "./update.js"
 import where from "./where.js"
+import who from "./who.js"
 import { frontend, websdk } from "./websdk.js"
 
 export const commands = [
@@ -32,6 +33,7 @@ export const commands = [
     log,
     net,
     bench,
+    who,
     websdk,
     frontend,
     drive,
