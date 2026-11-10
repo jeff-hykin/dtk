@@ -37,6 +37,7 @@ Imu = typestore.types["sensor_msgs/msg/Imu"]
 PointCloud2 = typestore.types["sensor_msgs/msg/PointCloud2"]
 PointField = typestore.types["sensor_msgs/msg/PointField"]
 Odometry = typestore.types["nav_msgs/msg/Odometry"]
+NavPath = typestore.types["nav_msgs/msg/Path"]
 
 # dimos ImageFormat name -> (ROS encoding, numpy dtype, channels)
 IMAGE_ENCODINGS = {
@@ -196,6 +197,11 @@ def convert_odometry(message, seconds):
     )
 
 
+def convert_path(message, seconds):
+    poses = [convert_pose_stamped(pose, pose.ts or seconds) for pose in message.poses]
+    return NavPath(header=header(seconds, message.frame_id), poses=poses)
+
+
 def convert_tf(message, seconds):
     transforms = []
     for entry in message.transforms:
@@ -227,6 +233,7 @@ CONVERTERS = {
     "Odometry": ("nav_msgs/msg/Odometry", convert_odometry),
     "PointStamped": ("geometry_msgs/msg/PointStamped", convert_point_stamped),
     "PoseStamped": ("geometry_msgs/msg/PoseStamped", convert_pose_stamped),
+    "Path": ("nav_msgs/msg/Path", convert_path),
     "TFMessage": ("tf2_msgs/msg/TFMessage", convert_tf),
 }
 
