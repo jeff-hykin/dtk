@@ -16,6 +16,7 @@ import run from "./run.js"
 import runIsolated from "./run_isolated.js"
 import list from "./list.js"
 import remove from "./remove.js"
+import replay from "./replay.js"
 import update from "./update.js"
 import where from "./where.js"
 import who from "./who.js"
@@ -26,6 +27,7 @@ export const commands = [
     runIsolated,
     chat,
     data,
+    replay,
     constellation,
     python,
     genBlue,

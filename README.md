@@ -201,6 +201,24 @@ dtk data tf namespace <recording> all --with <prefix> [--except a,b,c]
 dtk data tf reroot <recording> [--odometry auto|tf|<stream>] [--pose-of <frame>]   # odom -> lidar -> base_link
 ```
 
+### GSC replay pages
+
+`dtk replay` turns pgo-eval run dirs into the top-down replay page: one tab per map, two runs side by side, a time
+slider over the whole run (stand-still included), the map each run had published at that moment, closures by state,
+and the GT path (off by default).
+
+```sh
+dtk replay <battery>  --label-a "0.0.7 rc2" --label-b 0.0.6   # <battery>/cand/<map> vs <battery>/base/<map>
+dtk replay <dir A> <dir B>                                    # two dirs of <map>/ run dirs
+dtk replay <run A> [<run B>]                                  # one or two run dirs (a.kf, a.kf.closures, a.json)
+```
+
+The recording, its streams and the GT come from the run dirs. GT is a Point-LIO corrected stream
+(`odometry_corrected`, `pointlio_odometry_corrected`), else the db's `map->odom` / `world->odom` tf. The robot arrow is
+base_link through the recording's tf, and the build fails rather than draw the sensor's heading. It writes
+`<out>/page<N>/` (split under 60 MB, `.b64` blobs, a `files.json` for publishing) and renders check frames at each run's
+biggest GNC events into `<out>/check/`, printing how far the arrow is from the direction of travel.
+
 ### Running a blueprint
 
 ```sh

@@ -225,6 +225,22 @@ export const tools = [
         withPackages: ["mcap", "rosbags", "zstandard", "lz4"],
     },
     {
+        name: "replay_export",
+        kind: "python",
+        description: "Export one map of a GSC replay page from pgo-eval run dirs and the recording (used by `dtk replay`)",
+        entry: "tools/replay/export.py",
+        extraFiles: ["tools/replay/gt_poses.py", "tools/replay/store.py", "tools/replay/viewer.html"],
+        needsDimosModule: ["dimos/memory/store/sqlite.py", "dimos/memory2/store/sqlite.py"],
+    },
+    {
+        name: "replay_check",
+        kind: "python",
+        description: "Render PNG frames of an exported GSC replay at its biggest GNC events (used by `dtk replay`)",
+        entry: "tools/replay/check.py",
+        needsDimosModule: ["dimos/memory/store/sqlite.py", "dimos/memory2/store/sqlite.py"],
+        withPackages: ["matplotlib"],
+    },
+    {
         name: "run_supervisor",
         kind: "python",
         description: "Run a blueprint through `dimos run`, filtered and watched",
